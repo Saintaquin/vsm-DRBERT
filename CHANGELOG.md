@@ -88,6 +88,22 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
 - **Tests** : 76 (export PDF : statut 200, type `application/pdf`, en-tête
   `%PDF`, contenu > 1 Ko ; format inconnu → 400).
 
+### LLM local (extraction optionnelle, 100 % offline)
+
+- **Audit des modèles** (`docs/ADR/0004-llm-local-choix-modele.md`) : critères
+  concours (licence annexe 1, RGPD/offline art. 9, RAM 16 Go, français,
+  JSON) → **recommandation : Mistral NeMo 12B Instruct Q4_K_M (Apache 2.0)**,
+  repli 8 Go : Qwen 2.5 7B Instruct.
+- `src/extraction_nlp/llm.py` : catalogue des modèles (métadonnées
+  licence/taille/RAM), `download_model()` (GGUF validé par signature, hors
+  flux de traitement), CLI `python -m src.extraction_nlp.llm --list/--model`.
+- `entity_extractor.py` : adaptateur LLM renforcé (prompt système, parsing
+  JSON tolérant, confiance conservative 0,65 → « À valider », XAI).
+- API : `ProcessIn.nlp_engine` (`rules`|`llm`, validation stricte) ; frontend :
+  sélecteur « Extraction : Règles / LLM local » ; provenance XAI tracée
+  (`moteur_effectif`, repli inclus).
+- **Tests** : 86 (10 ajoutés : config, métadonnées, repli, parsing JSON, API).
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

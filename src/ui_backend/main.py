@@ -78,6 +78,9 @@ class BootstrapIn(LoginIn):
 class ProcessIn(BaseModel):
     engine: str = Field(default="tesseract", pattern="^[a-z0-9_]+$")
     anonymize_mode: str = Field(default="pseudo", pattern="^(pseudo|strict)$")
+    # Moteur NLP : « rules » (défaut, offline) ou « llm » (LLM local,
+    # téléchargé par l'admin — voir docs/ADR/0004). Strictement local.
+    nlp_engine: str = Field(default="rules", pattern="^(rules|llm)$")
 
 
 class ValidateIn(BaseModel):
@@ -253,7 +256,7 @@ def process(document_id: str, body: ProcessIn, sess: dict = Depends(current_sess
             )
         # sans passphrase de coffre, le mapping est volontairement perdu (≈ strict)
 
-    nlp_json = nlp_pipeline(ocr_json)
+    nlp_json = nlp_pipeline(ocr_json, nlp_engine=body.nlp_engine)
     from src.vsm_generation.vsm_builder import build_vsm
 
     vsm = build_vsm(nlp_json)
@@ -271,6 +274,7 @@ def process(document_id: str, body: ProcessIn, sess: dict = Depends(current_sess
             "document_id": document_id,
             "vsm_id": vsm_id,
             "engine": body.engine,
+            "nlp_engine": body.nlp_engine,
             "pii_count": ocr_json["pii_detected_count"],
         },
     )

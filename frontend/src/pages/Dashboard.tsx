@@ -14,6 +14,7 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [lastReport, setLastReport] = useState<ProcessResult | null>(null);
   const [anonymizeMode, setAnonymizeMode] = useState<"pseudo" | "strict">("pseudo");
+  const [nlpEngine, setNlpEngine] = useState<"rules" | "llm">("rules");
   const [maxUploadMb, setMaxUploadMb] = useState<number>(50);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -44,7 +45,7 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
     try {
       const { document_id } = await api.upload(file);
       setBusy("Traitement en cours (OCR → anonymisation → extraction → VSM)…");
-      const result = await api.process(document_id, "tesseract", anonymizeMode);
+      const result = await api.process(document_id, "tesseract", anonymizeMode, nlpEngine);
       setLastReport(result);
       await refresh();
     } catch (err) {
@@ -82,6 +83,18 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
                   onChange={() => setAnonymizeMode(m)}
                   className="accent-sarcelle focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle" />
                 {m === "pseudo" ? "Pseudonymisation (réversible via coffre-fort)" : "Stricte (irréversible)"}
+              </label>
+            ))}
+          </fieldset>
+          <fieldset className="flex flex-wrap items-center gap-4">
+            <legend className="sr-only">Moteur d'extraction</legend>
+            <span className="text-sm font-medium text-encre">Extraction :</span>
+            {(["rules", "llm"] as const).map((m) => (
+              <label key={m} className="inline-flex cursor-pointer items-center gap-1.5 text-sm">
+                <input type="radio" name="nlp" value={m} checked={nlpEngine === m}
+                  onChange={() => setNlpEngine(m)}
+                  className="accent-sarcelle focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle" />
+                {m === "rules" ? "Règles (rapide, offline)" : "LLM local (plus précis — modèle requis)"}
               </label>
             ))}
           </fieldset>

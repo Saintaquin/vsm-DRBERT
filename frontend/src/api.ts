@@ -75,8 +75,8 @@ export const api = {
     fd.append("file", file);
     return request<{ document_id: string; sha256: string }>("/documents/upload", { method: "POST", body: fd });
   },
-  process: (id: string, engine: string, anonymize_mode: string) =>
-    request<ProcessResult>(`/documents/${id}/process`, { method: "POST", body: JSON.stringify({ engine, anonymize_mode }) }),
+  process: (id: string, engine: string, anonymize_mode: string, nlp_engine = "rules") =>
+    request<ProcessResult>(`/documents/${id}/process`, { method: "POST", body: JSON.stringify({ engine, anonymize_mode, nlp_engine }) }),
   listDocuments: () => request<DocMeta[]>("/documents"),
   getOcr: (id: string) => request<OcrResult>(`/documents/${id}/ocr`),
   forget: (dossierId: string) =>

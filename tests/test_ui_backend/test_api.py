@@ -132,6 +132,17 @@ def test_health_exposes_upload_limit(client):
     assert client.get("/health").json()["max_upload_mb"] == 50
 
 
+def test_process_invalid_nlp_engine_rejected(client):
+    _login(client)
+    # nlp_engine hors (rules|llm) → 422 (validation Pydantic) — pas de cloud.
+    r = client.post(
+        "/documents/x/process",
+        headers=_login(client),
+        json={"engine": "tesseract", "anonymize_mode": "pseudo", "nlp_engine": "cloud"},
+    )
+    assert r.status_code == 422
+
+
 def test_upload_limit_configurable(client_small_limit):
     # VSM_MAX_UPLOAD_MB=1 : un fichier de 2 Mo est rejeté (413), 1 Ko passe.
     headers = _login(client_small_limit)

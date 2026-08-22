@@ -435,47 +435,94 @@ def extract_entities_free_text_fallback(
 
 
 # ---------------------------------------------------------------------------
-# Adaptateur LLM local (optionnel)
+# Adaptateur LLM local (optionnel — strictement offline, voir docs/ADR/0004)
 # ---------------------------------------------------------------------------
-_LLM_PROMPT = """Tu extrais des informations médicales d'un texte OCR français.
-Réponds UNIQUEMENT en JSON : {"antecedents": [], "allergies": [],
-"traitements_long_cours": [], "vaccinations": [], "pathologies_actives": [],
-"facteurs_risque": [], "points_vigilance": []} — chaque élément est
-{"valeur": str, "passage": str}. Texte :\n"""
+_LLM_SYSTEM = (
+    "Tu es un assistant médical français qui extrait des informations "
+    "structurées de comptes-rendus médicaux. Réponds UNIQUEMENT en JSON valide. "
+    "Les sections possibles sont : pathologies_actives, antecedents, allergies, "
+    "traitements_long_cours, facteurs_risque, vaccinations, points_vigilance. "
+    'Chaque élément est {"valeur": str, "passage": str} où « passage » est '
+    "le texte source exact (reproduit tel quel) et « valeur » l'information "
+    "normalisée. Ne rien inventer : si une section est vide, laisser []."
+)
+_LLM_PROMPT = """Extrais les informations médicales de ce texte OCR français.
+JSON attendu :
+{"pathologies_actives": [], "antecedents": [], "allergies": [],
+"traitements_long_cours": [], "facteurs_risque": [], "vaccinations": [],
+"points_vigilance": []}
+
+Texte :
+"""
+
+# Confiance des entités LLM : volontairement conservatrice (< seuil 0,7) —
+# la sortie d'un LLM doit toujours être relue par le médecin (XAI honnête).
+LLM_CONFIDENCE = 0.65
+
+
+def _extract_json_llm(content: str) -> dict:
+    """Parse le JSON de la réponse LLM, même si entouré de texte/fences."""
+    import json
+    import re
+
+    content = content.strip()
+    # retirer les fences markdown ```json … ```
+    content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        start, end = content.find("{"), content.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(content[start : end + 1])
+        raise
 
 
 def extract_entities_llm(
     text: str, model_path: str | None = None
-) -> list[ExtractedEntity]:  # pragma: no cover
-    """Nécessite llama-cpp-python + un GGUF local. Strictement offline."""
-    import json
-    from pathlib import Path
+) -> list[ExtractedEntity]:  # pragma: no cover — nécessite llama-cpp + GGUF
+    """Extraction par LLM local (llama-cpp-python + GGUF, jamais en cloud).
 
+    Nécessite un modèle téléchargé : python -m src.extraction_nlp.llm"""
     from llama_cpp import Llama
 
-    model_path = model_path or str(Path.home() / ".cache" / "vsm-ocr" / "model.gguf")
+    from .llm import default_model_path
+
+    model_path = model_path or str(default_model_path())
     llm = Llama(model_path=model_path, n_ctx=8192, verbose=False)
     out = llm.create_chat_completion(
-        messages=[{"role": "user", "content": _LLM_PROMPT + text[:6000]}],
+        messages=[
+            {"role": "system", "content": _LLM_SYSTEM},
+            {"role": "user", "content": _LLM_PROMPT + text[:6000]},
+        ],
         response_format={"type": "json_object"},
         temperature=0.0,
+        max_tokens=2048,
     )
-    data = json.loads(out["choices"][0]["message"]["content"])
+    data = _extract_json_llm(out["choices"][0]["message"]["content"])
     entities = []
     for section, items in data.items():
         if section not in SECTION_HEADERS:
             continue
+        if not isinstance(items, list):
+            continue
         for it in items:
-            passage = it.get("passage", it.get("valeur", ""))
+            if not isinstance(it, dict):
+                continue
+            passage = str(it.get("passage", it.get("valeur", "")))
+            valeur = str(it.get("valeur", ""))
+            if not valeur:
+                continue
             idx = text.find(passage)
+            if idx == -1:
+                idx = max(text.find(valeur), 0)
             entities.append(
                 ExtractedEntity(
-                    valeur=it.get("valeur", ""),
+                    valeur=valeur,
                     section=section,
-                    confiance=0.75,
-                    passage=passage,
-                    offset_debut=max(idx, 0),
-                    offset_fin=max(idx, 0) + len(passage),
+                    confiance=LLM_CONFIDENCE,
+                    passage=passage or valeur,
+                    offset_debut=idx,
+                    offset_fin=idx + len(passage or valeur),
                     moteur_nlp=NLP_ENGINE_LLM,
                 )
             )

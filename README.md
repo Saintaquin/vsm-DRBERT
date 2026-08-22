@@ -101,13 +101,25 @@ schema/vsm_schema.json  contrat d'interface entre les modules (v1.1.0)
 ```
 
 Le moteur NLP par défaut est **à base de règles** (aucun téléchargement, aucune
-dépendance lourde). Un adaptateur **LLM local** (llama-cpp-python, modèle dans
-`~/.cache/vsm-ocr/`, jamais committé) peut être activé — voir `docs/ADR/`.
+dépendance lourde). Un moteur **LLM local optionnel** peut être activé pour
+gagner sur les documents non rubriqués — **100 % offline** (RGPD, art. 9) :
+modèle Apache 2.0 téléchargé une fois à l'installation, jamais pendant le
+traitement, inférence sur le texte pseudonymisé.
+
+```bash
+pip install llama-cpp-python                  # moteur d'inférence (optionnel)
+python -m src.extraction_nlp.llm --list       # modèles candidats (audit ADR-0004)
+python -m src.extraction_nlp.llm              # télécharge Mistral NeMo 12B Q4 (~7 Go, 16 Go RAM)
+# machine 8 Go : python -m src.extraction_nlp.llm --model qwen2.5-7b
+```
+
+Puis dans l'UI : **Extraction → « LLM local »** (ou `"nlp_engine": "llm"` dans
+`POST /documents/{id}/process`). Voir `docs/ADR/0004-llm-local-choix-modele.md`.
 
 ## Tests, qualité, benchmark
 
 ```bash
-pytest tests/ -v                          # 44 tests (anonymisation, OCR, NLP, VSM, storage, API)
+pytest tests/ -v                          # 86 tests (anonymisation, OCR, NLP, LLM, VSM, storage, API)
 python -m src.ingestion_ocr.benchmark     # CER/WER → outputs/benchmark.csv + BENCHMARK_REPORT.md
 python -m examples.demo_nlp               # démo extraction NLP sur texte exemple
 ```
