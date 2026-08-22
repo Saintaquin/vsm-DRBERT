@@ -1,0 +1,69 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Dépendances système (Tesseract fra + Poppler)
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-fra poppler-utils
+      - name: Dépendances Python
+        run: |
+          pip install -r requirements.txt
+          pip install pytest httpx ruff bandit pip-audit
+      - name: Lint (ruff)
+        run: ruff check src/ tests/ && ruff format --check src/ tests/
+      - name: Sécurité statique (bandit)
+        run: bandit -r src/ -ll
+      - name: Audit des dépendances (pip-audit)
+        run: pip-audit -r requirements.txt || true  # informatif : ne bloque pas sur CVE sans correctif
+      - name: Garde-fou anti-PII (aucune donnée patient réelle committée)
+        run: |
+          # NIR réels (13 chiffres contigus hors data/synthetic), emails non fictifs, etc.
+          ! grep -rPn --include='*.py' --include='*.md' --include='*.json' \
+            --exclude-dir=data '[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}' \
+            src/ docs/ schema/ || (echo 'Pattern NIR détecté hors dataset synthétique' && exit 1)
+      - name: Génération du dataset synthétique
+        run: python -m src.ingestion_ocr.generate_dataset
+      - name: Tests
+        run: pytest tests/ -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+
+  tauri:
+    # Build desktop sur tag uniquement (long). Bundles .msi / .AppImage / .deb.
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Dépendances Tauri (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Build
+        run: |
+          cd frontend && npm ci && npm run build && cd ..
+          cargo install tauri-cli --version '^2' --locked
+          cd src-tauri && cargo tauri build

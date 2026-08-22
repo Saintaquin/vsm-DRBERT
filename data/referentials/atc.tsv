@@ -1,0 +1,39 @@
+code	libelle	dci
+A10BA02	Metformine	metformine
+A10BB09	Gliclazide	gliclazide
+A10AE04	Insuline glargine	insuline glargine
+C09AA02	Énalapril	enalapril
+C09AA05	Ramipril	ramipril
+C09CA01	Losartan	losartan
+C07AB07	Bisoprolol	bisoprolol
+C07AB02	Métoprolol	metoprolol
+C08CA01	Amlodipine	amlodipine
+C10AA01	Simvastatine	simvastatine
+C10AA05	Atorvastatine	atorvastatine
+C10AA07	Rosuvastatine	rosuvastatine
+B01AC06	Acide acétylsalicylique (Aspirine/Kardégic)	aspirine
+B01AA03	Warfarine	warfarine
+B01AF01	Rivaroxaban	rivaroxaban
+B01AF02	Apixaban	apixaban
+N02BE01	Paracétamol	paracetamol
+M01AE01	Ibuprofène	ibuprofene
+A02BC01	Oméprazole	omeprazole
+A02BC05	Ésoméprazole	esomeprazole
+H03AA01	Lévothyroxine sodique (Levothyrox)	levothyroxine
+N06AB03	Fluoxétine	fluoxetine
+N06AB06	Sertraline	sertraline
+N06AB05	Paroxétine	paroxetine
+N05BA06	Lorazépam	lorazepam
+R03AC02	Salbutamol (Ventoline)	salbutamol
+R03AK06	Salmétérol et fluticasone (Sérétide)	seretide
+C03CA01	Furosémide	furosemide
+C03AA03	Hydrochlorothiazide	hydrochlorothiazide
+M05BA04	Acide alendronique	alendronate
+N03AX09	Lamotrigine	lamotrigine
+N03AX14	Lévétiracétam	levetiracetam
+A12AX	Calcium + vitamine D	calcium vitamine d
+B03BB01	Acide folique	acide folique
+J07BB	Vaccin grippal	vaccin grippe
+J07AL	Vaccin pneumococcique	vaccin pneumocoque
+J07BX03	Vaccin COVID-19	vaccin covid
+J07AM	Vaccin tétanique (DTP)	vaccin dtp

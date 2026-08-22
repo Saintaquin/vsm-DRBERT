@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+frontend/dist/
+src-tauri/target/
+outputs/
+*.db
+*.bin
+.vsm-ocr/
+~/.cache/vsm-ocr/
+*.gguf
+*.pt
+*.onnx
+.pytest_cache/
+.ruff_cache/
+frontend/tsconfig.tsbuildinfo

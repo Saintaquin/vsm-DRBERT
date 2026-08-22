@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VSM-OCR",
+  "version": "1.0.0",
+  "identifier": "fr.sante-ia.vsm-ocr",
+  "build": {
+    "beforeDevCommand": "npm run dev --prefix ../frontend",
+    "beforeBuildCommand": "npm run build --prefix ../frontend",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "VSM-OCR — Volet de Synthèse Médicale",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:8741; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "appimage", "deb"],
+    "icon": ["icons/icon.png"],
+    "externalBin": [],
+    "resources": ["../src/**", "../schema/**", "../data/referentials/**"]
+  },
+  "plugins": {}
+}

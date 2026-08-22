@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://vsm-ocr.local/schema/vsm_schema.json",
+  "title": "Volet de Synthèse Médicale (VSM) — contrat inter-modules",
+  "version": "1.1.0",
+  "type": "object",
+  "required": ["schema_version", "document_id", "date_generation", "patient", "sections", "provenance"],
+  "definitions": {
+    "champ_trace": {
+      "type": "object",
+      "required": ["valeur", "confiance", "source"],
+      "properties": {
+        "valeur": { "type": "string" },
+        "confiance": { "type": "number", "minimum": 0, "maximum": 1 },
+        "source": {
+          "type": "object",
+          "properties": {
+            "document_id": { "type": "string" },
+            "page": { "type": "integer", "minimum": 1 },
+            "passage": { "type": "string" },
+            "offset_debut": { "type": "integer" },
+            "offset_fin": { "type": "integer" }
+          }
+        },
+        "moteur_ocr": { "type": "string" },
+        "moteur_nlp": { "type": "string" },
+        "a_valider": { "type": "boolean" },
+        "code_normalise": {
+          "type": "object",
+          "properties": {
+            "systeme": { "type": "string", "enum": ["CIM-10", "ATC", "SNOMED-CT", "CIS"] },
+            "code": { "type": "string" },
+            "libelle_officiel": { "type": "string" },
+            "confiance_normalisation": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      }
+    },
+    "liste_champs": { "type": "array", "items": { "$ref": "#/definitions/champ_trace" } }
+  },
+  "properties": {
+    "schema_version": { "type": "string" },
+    "document_id": { "type": "string" },
+    "date_generation": { "type": "string", "format": "date-time" },
+    "statut": { "type": "string", "enum": ["brouillon", "a_valider", "valide", "signe"] },
+    "patient": {
+      "type": "object",
+      "properties": {
+        "identite": { "$ref": "#/definitions/champ_trace" },
+        "date_naissance": { "$ref": "#/definitions/champ_trace" },
+        "sexe": { "$ref": "#/definitions/champ_trace" },
+        "ins": { "$ref": "#/definitions/champ_trace" }
+      }
+    },
+    "medecin_traitant": {
+      "type": "object",
+      "properties": {
+        "identite": { "$ref": "#/definitions/champ_trace" },
+        "rpps": { "$ref": "#/definitions/champ_trace" },
+        "adelI": { "$ref": "#/definitions/champ_trace" }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "required": [
+        "pathologies_actives", "antecedents", "allergies", "traitements_long_cours",
+        "facteurs_risque", "vaccinations", "points_vigilance"
+      ],
+      "properties": {
+        "pathologies_actives": { "$ref": "#/definitions/liste_champs" },
+        "antecedents": { "$ref": "#/definitions/liste_champs" },
+        "allergies": { "$ref": "#/definitions/liste_champs" },
+        "traitements_long_cours": { "$ref": "#/definitions/liste_champs" },
+        "facteurs_risque": { "$ref": "#/definitions/liste_champs" },
+        "vaccinations": { "$ref": "#/definitions/liste_champs" },
+        "points_vigilance": { "$ref": "#/definitions/liste_champs" }
+      }
+    },
+    "completude": {
+      "type": "object",
+      "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["documents_sources"],
+      "properties": {
+        "documents_sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["document_id", "sha256"],
+            "properties": {
+              "document_id": { "type": "string" },
+              "fichier": { "type": "string" },
+              "sha256": { "type": "string" },
+              "moteur_ocr": { "type": "string" },
+              "anonymization_applied": { "type": "boolean" },
+              "pii_detected_count": { "type": "integer" }
+            }
+          }
+        },
+        "moteur_nlp": { "type": "string" },
+        "pipeline_version": { "type": "string" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "properties": {
+        "signe_par": { "type": "string" },
+        "date_signature": { "type": "string", "format": "date-time" },
+        "empreinte_vsm": { "type": "string" }
+      }
+    },
+    "avertissement": { "type": "string" }
+  }
+}

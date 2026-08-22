@@ -1,0 +1,140 @@
+import { useCallback, useEffect, useState } from "react";
+import { User, VsmListItem, api } from "./api";
+import { Button } from "./components/ui";
+import { AuditTrail, Settings } from "./pages/AuditSettings";
+import { Dashboard } from "./pages/Dashboard";
+import { DocumentViewer } from "./pages/DocumentViewer";
+import { Login } from "./pages/Login";
+import { VSMEditor } from "./pages/VSMEditor";
+
+type View =
+  | { name: "dashboard" }
+  | { name: "vsm"; vsmId: string }
+  | { name: "document"; documentId: string; highlight?: string }
+  | { name: "audit" }
+  | { name: "settings" };
+
+const NAV: { key: View["name"]; label: string; roles?: User["role"][] }[] = [
+  { key: "dashboard", label: "Tableau de bord" },
+  { key: "audit", label: "Journal d'audit", roles: ["medecin", "admin"] },
+  { key: "settings", label: "Paramètres" },
+];
+
+export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [view, setView] = useState<View>({ name: "dashboard" });
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // Recherche globale Ctrl+K
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      } else if (e.key === "Escape") {
+        setPaletteOpen(false);
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
+
+  const logout = useCallback(async () => {
+    try { await api.logout(); } catch { /* session déjà expirée */ }
+    setUser(null);
+    setView({ name: "dashboard" });
+  }, []);
+
+  if (!user) return <Login onLogin={(u) => setUser(u)} />;
+
+  return (
+    <div className="min-h-screen bg-papier font-corps text-encre">
+      <a href="#contenu" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-sarcelle focus:px-3 focus:py-1.5 focus:text-white">
+        Aller au contenu
+      </a>
+      <header className="border-b border-trait bg-carte">
+        <div className="mx-auto flex max-w-5xl items-center gap-6 px-4 py-3">
+          <span className="flex items-center gap-2 font-semibold">
+            <span aria-hidden className="flex h-7 w-7 items-center justify-center rounded bg-sarcelle text-sm font-bold text-white">V</span>
+            VSM-OCR
+          </span>
+          <nav aria-label="Navigation principale" className="flex gap-1">
+            {NAV.filter((n) => !n.roles || n.roles.includes(user.role)).map((n) => (
+              <button key={n.key}
+                onClick={() => setView({ name: n.key } as View)}
+                aria-current={view.name === n.key ? "page" : undefined}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle ${view.name === n.key ? "bg-sarcelle-pale text-sarcelle-fonce" : "text-sourdine hover:bg-papier hover:text-encre"}`}>
+                {n.label}
+              </button>
+            ))}
+          </nav>
+          <div className="ml-auto flex items-center gap-3 text-sm">
+            <span className="text-sourdine">{user.username} · {user.role}</span>
+            <Button variant="secondary" onClick={logout}>Se déconnecter</Button>
+          </div>
+        </div>
+      </header>
+
+      <main id="contenu" className="mx-auto max-w-5xl px-4 py-6">
+        {view.name !== "dashboard" && (
+          <button onClick={() => setView({ name: "dashboard" })}
+            className="mb-4 text-sm text-sarcelle underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle">
+            ← Retour au tableau de bord
+          </button>
+        )}
+        {view.name === "dashboard" && (
+          <Dashboard
+            onOpenVsm={(vsmId) => setView({ name: "vsm", vsmId })}
+            onOpenDocument={(documentId) => setView({ name: "document", documentId })}
+          />
+        )}
+        {view.name === "vsm" && (
+          <VSMEditor vsmId={view.vsmId} user={user}
+            onShowSource={(documentId, passage) => setView({ name: "document", documentId, highlight: passage })} />
+        )}
+        {view.name === "document" && <DocumentViewer documentId={view.documentId} highlight={view.highlight} />}
+        {view.name === "audit" && <AuditTrail />}
+        {view.name === "settings" && <Settings user={user} />}
+      </main>
+
+      <footer className="mx-auto max-w-5xl px-4 pb-6 text-center text-xs text-sourdine">
+        Contenu généré automatiquement — à valider par un médecin avant tout usage clinique. Application 100 % locale.
+      </footer>
+
+      {paletteOpen && (
+        <Palette onClose={() => setPaletteOpen(false)} onGoVsm={(id) => { setView({ name: "vsm", vsmId: id }); setPaletteOpen(false); }} />
+      )}
+    </div>
+  );
+}
+
+/** Palette de recherche globale (Ctrl+K) : filtre les VSM par identifiant/statut. */
+function Palette({ onClose, onGoVsm }: { onClose: () => void; onGoVsm: (id: string) => void }) {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState<VsmListItem[]>([]);
+  useEffect(() => { api.listVsm().then(setItems).catch(() => setItems([])); }, []);
+  const filtered = items.filter((v) => (v.id + " " + v.statut).toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Recherche globale"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-encre/40 pt-24" onClick={onClose}>
+      <div className="w-full max-w-md rounded-lg border border-trait bg-carte shadow-lg" onClick={(e) => e.stopPropagation()}>
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="Rechercher un VSM… (Échap pour fermer)"
+          aria-label="Rechercher un VSM"
+          className="w-full border-b border-trait bg-transparent px-4 py-3 text-sm focus:outline-none" />
+        <ul className="max-h-72 overflow-auto p-2">
+          {filtered.length === 0 && <li className="px-2 py-3 text-sm text-sourdine">Aucun résultat.</li>}
+          {filtered.map((v) => (
+            <li key={v.id}>
+              <button onClick={() => onGoVsm(v.id)}
+                className="flex w-full items-center justify-between rounded px-2 py-2 text-left text-sm hover:bg-sarcelle-pale focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle">
+                <span className="font-mono">{v.id}</span>
+                <span className="text-xs text-sourdine">{v.statut}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,15 @@
+HOPITAL UNIVERSITAIRE IMAGINAIRE — CARDIOLOGIE
+Lettre de sortie — 28/02/2024
+Patient : Michel BERNARD    Ne le : 03/07/1948
+N. dossier : CARD-2024-0892
+Medecin referent : Pr Claire DUBOIS — RPPS : 10009876543
+
+MOTIF : Decompensation cardiaque sur fibrillation auriculaire.
+ANTECEDENTS : Insuffisance cardiaque. Fibrillation auriculaire (2020).
+Hypercholesterolemie. Arthrose des genoux.
+ALLERGIES : Iode (reaction cutanee lors d'un scanner en 2019).
+TRAITEMENT DE SORTIE : Bisoprolol 5 mg le matin.
+Apixaban 5 mg matin et soir. Furosemide 40 mg le matin.
+Rosuvastatine 10 mg le soir.
+POINTS DE VIGILANCE : Surveillance du poids. Controle INR inutile
+sous apixaban. Revoir en consultation dans 1 mois.

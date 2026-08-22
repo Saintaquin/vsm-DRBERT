@@ -1,0 +1,21 @@
+# VSM-OCR — dépendances Python (toutes locales, aucune ne fait d'appel cloud)
+# Python 3.12
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+python-multipart>=0.0.9        # upload de fichiers FastAPI
+cryptography>=42.0             # AES-256-GCM
+argon2-cffi>=23.1              # dérivation de clé / hash mots de passe
+rapidfuzz>=3.6                 # normalisation fuzzy CIM-10 / ATC
+jsonschema>=4.21               # validation du contrat vsm_schema.json
+pytesseract>=0.3.10            # OCR (binaire tesseract + pack fra requis)
+pdf2image>=1.17                # PDF -> images (binaire poppler requis)
+pillow>=10.2
+numpy>=1.26
+reportlab>=4.1                 # rendu PDF du VSM
+jiwer>=3.0                     # CER/WER pour le benchmark
+
+# --- optionnels (adaptateurs, non requis pour le fonctionnement nominal) ---
+# llama-cpp-python>=0.2        # moteur NLP LLM local (modèle dans ~/.cache/vsm-ocr/)
+# spacy>=3.7                   # détection PII renforcée (fr_core_news_lg)
+# python-doctr / paddleocr     # moteurs OCR alternatifs pour le benchmark

@@ -1,0 +1,14 @@
+CENTRE HOSPITALIER SAINT-FICTIF — SERVICE DE MEDECINE INTERNE
+Compte rendu de consultation — 12/03/2024
+Patient : Jean DUPONT    Ne le : 14/05/1956
+N. Securite Sociale : 1 56 05 75 123 456 78
+Medecin : Dr Marie LAURENT — RPPS : 10001234567
+
+ANTECEDENTS : Diabete de type 2 depuis 2010. Hypertension arterielle.
+Infarctus du myocarde en 2018 avec pose de stent.
+ALLERGIES : Penicilline (eruption cutanee).
+TRAITEMENTS EN COURS : Metformine 1000 mg matin et soir.
+Ramipril 5 mg le matin. Atorvastatine 20 mg le soir.
+Aspirine 75 mg par jour.
+VACCINATIONS : Grippe 10/2023. COVID-19 rappel 09/2023. DTP a jour.
+CONCLUSION : Equilibre glycemique satisfaisant. Poursuite du traitement.

@@ -1,0 +1,36 @@
+code	libelle
+E11	Diabète sucré de type 2
+E11.9	Diabète sucré de type 2, sans complication
+I10	Hypertension essentielle (primitive)
+I25	Cardiopathie ischémique chronique
+I48	Fibrillation et flutter auriculaires
+I50	Insuffisance cardiaque
+J44	Autre maladie pulmonaire obstructive chronique (BPCO)
+J45	Asthme
+E78.0	Hypercholestérolémie pure
+E78.5	Hyperlipidémie, sans précision
+E66	Obésité
+E03.9	Hypothyroïdie, sans précision
+N18	Maladie rénale chronique
+F32	Épisode dépressif
+F41	Autres troubles anxieux
+G40	Épilepsie
+M81	Ostéoporose sans fracture pathologique
+M15	Polyarthrose
+M54.5	Lombalgie basse
+K21	Reflux gastro-œsophagien
+K70.3	Cirrhose alcoolique du foie
+C50	Tumeur maligne du sein
+C61	Tumeur maligne de la prostate
+C18	Tumeur maligne du côlon
+I63	Infarctus cérébral (AVC ischémique)
+I21	Infarctus aigu du myocarde
+Z95.1	Présence de pontage aortocoronaire
+Z95.0	Présence d'un stimulateur cardiaque (pacemaker)
+T78.4	Allergie, sans précision
+Z88.0	Antécédents personnels d'allergie à la pénicilline
+E10	Diabète sucré de type 1
+G20	Maladie de Parkinson
+G30	Maladie d'Alzheimer
+H40	Glaucome
+D50	Anémie par carence en fer
