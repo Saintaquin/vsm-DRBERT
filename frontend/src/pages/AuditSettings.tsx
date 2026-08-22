@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError, AuditEntry, User, api } from "../api";
 import { Alerte, Card, CardBody, CardHeader, Spinner } from "../components/ui";
+import { AccessibilitySettings } from "./Accessibility";
 
 export function AuditTrail() {
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
@@ -81,9 +82,11 @@ export function Settings({ user }: { user: User }) {
           <p>· Le coffre-fort de pseudonymisation requiert la variable d'environnement <code className="font-mono">VSM_VAULT_PASSPHRASE</code> (clé maître hors application). Sans elle, les mappings ne sont pas conservés.</p>
           <p>· Aucune donnée ne quitte cette machine : pas de cloud, pas de télémétrie, pas de mise à jour automatique.</p>
           <p>· Droit à l'oubli : bouton « Oublier » sur chaque dossier du tableau de bord.</p>
-          <p className="pt-2 text-sourdine">Raccourcis : <kbd className="rounded border border-trait bg-papier px-1">Ctrl+K</kbd> recherche · <kbd className="rounded border border-trait bg-papier px-1">Tab</kbd>/<kbd className="rounded border border-trait bg-papier px-1">Maj+Tab</kbd> navigation champs · <kbd className="rounded border border-trait bg-papier px-1">↵</kbd> confirmer un champ · <kbd className="rounded border border-trait bg-papier px-1">Ctrl+↵</kbd> enregistrer le VSM.</p>
+          <p className="pt-2 text-sourdine">Raccourcis : <kbd className="rounded border border-trait bg-papier px-1">Ctrl+K</kbd> recherche · <kbd className="rounded border border-trait bg-papier px-1">Tab</kbd>/<kbd className="rounded border border-trait bg-papier px-1">Maj+Tab</kbd> navigation champs · <kbd className="rounded border border-trait bg-papier px-1">↵</kbd> confirmer un champ · <kbd className="rounded border border-trait bg-papier px-1">Ctrl+↵</kbd> enregistrer le VSM · <kbd className="rounded border border-trait bg-papier px-1">?</kbd> aide des raccourcis.</p>
         </CardBody>
       </Card>
+
+      <AccessibilitySettings />
     </div>
   );
 }

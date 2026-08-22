@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, ChampTrace, User, Vsm, api } from "../api";
+import { announce } from "../accessibility";
 import { Alerte, Button, Card, CardBody, CardHeader, ConfianceBadge, Spinner, StatutBadge } from "../components/ui";
 
 /** Ordre canonique HAS des sections du VSM. */
@@ -70,9 +71,13 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
       const updated = await api.validateVsm(vsmId, { sections: vsm.sections, statut });
       setVsm(updated);
       setDirty(false);
-      setNotice(statut === "signe" ? "VSM signé et scellé (empreinte SHA-256 enregistrée)." : "Modifications enregistrées.");
+      const notice = statut === "signe" ? "VSM signé et scellé (empreinte SHA-256 enregistrée)." : "Modifications enregistrées.";
+      announce(notice);
+      setNotice(notice);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Enregistrement impossible");
+      const msg = e instanceof ApiError ? e.message : "Enregistrement impossible";
+      announce(`Erreur : ${msg}`);
+      setError(msg);
     } finally {
       setBusy(false);
     }

@@ -118,6 +118,21 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
 - Recette sur poste NVIDIA documentée (benchmark CER/WER français) —
   `outputs/AUDIT_OCR_UNLIMITED.md` ; Tesseract+fra reste le défaut.
 
+### Accessibilité — page « Paramètres » (malvoyants, aveugles, clavier)
+
+- Audit (outputs/AUDIT_ACCESSIBILITE.md) → **fonctionnalités validées** :
+  A1 taille de texte (100/112,5/125 %) · A2 contraste renforcé (AAA) ·
+  A3 thème sombre · A4 police **Atkinson Hyperlegible embarquée** (SIL OFL,
+  aucun CDN) · A5 animations réduites · B1 mode lecteur d'écran (annonces
+  `aria-live`) · B2 **focus trap** Palette/aide corrigé (WCAG 2.4.3) ·
+  C1 raccourcis `?` (aide) et `Ctrl+,` (Paramètres) · D1 persistance
+  `localStorage` + réinitialisation + détection préférences système.
+- Fichiers : `frontend/src/accessibility.ts`, `pages/Accessibility.tsx`,
+  `App.tsx`, `index.css`, `AuditSettings.tsx`, `Dashboard.tsx`, `VSMEditor.tsx`.
+- Conformité : art. 7 (ergonomie 10 %), RGPD neutre (préférences locales,
+  aucune donnée patient), 100 % local ; backend inchangé (93 tests verts).
+- ADR-0006 ; checklist de recette D3 dans le rapport d'audit.
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

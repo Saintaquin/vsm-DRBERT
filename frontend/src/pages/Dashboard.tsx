@@ -1,5 +1,6 @@
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { ApiError, DocMeta, ProcessResult, VsmListItem, api } from "../api";
+import { announce } from "../accessibility";
 import { Alerte, Button, Card, CardBody, CardHeader, EmptyState, Spinner, StatutBadge } from "../components/ui";
 
 interface Props {
@@ -50,14 +51,19 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
     if (!file) return;
     setError(null);
     setBusy("Envoi du document…");
+    announce(`Envoi du document ${file.name}`);
     try {
       const { document_id } = await api.upload(file);
       setBusy("Traitement en cours (OCR → anonymisation → extraction → VSM)…");
+      announce("Traitement du document en cours");
       const result = await api.process(document_id, ocrEngine, anonymizeMode, nlpEngine);
+      announce(`Document traité : ${result.processing_report.pages_ok} pages, ${result.pii_detected_count} informations identifiantes masquées`);
       setLastReport(result);
       await refresh();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Erreur pendant le traitement");
+      const msg = err instanceof ApiError ? err.message : "Erreur pendant le traitement";
+      announce(`Erreur : ${msg}`);
+      setError(msg);
     } finally {
       setBusy(null);
       if (fileRef.current) fileRef.current.value = "";

@@ -2,10 +2,94 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Respect des préférences de mouvement réduit (WCAG 2.3.3) */
+/* ------------------------------------------------------------------ */
+/* Accessibilité — préférences appliquées via data-* sur <html>        */
+/* (docs/ADR/0006 ; fonctionnalités validées : A1–A5, B1–B2, C1, D1)  */
+/* ------------------------------------------------------------------ */
+
+/* A4 — Police haute lisibilité Atkinson Hyperlegible (SIL OFL, embarquée) */
+@font-face {
+  font-family: "Atkinson Hyperlegible";
+  src: url("/fonts/AtkinsonHyperlegible-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Atkinson Hyperlegible";
+  src: url("/fonts/AtkinsonHyperlegible-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-display: swap;
+}
+html[data-font="hyperlegible"] body {
+  font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+}
+
+/* A1 — Taille de texte (WCAG 1.4.4 : zoom jusqu'à 200 %) */
+html[data-text-scale="lg"] { font-size: 112.5%; }
+html[data-text-scale="xl"] { font-size: 125%; }
+
+/* A5 — Réduire les animations (WCAG 2.3.3), forcé ou suivi du système */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+html[data-motion="reduce"] *, html[data-motion="reduce"] *::before,
+html[data-motion="reduce"] *::after {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.01ms !important;
+}
+
+/* A3 — Thème sombre (surcharges ciblées de la palette « blouse ») */
+html[data-theme="dark"] body { background-color: #0e1417; color: #e6edef; }
+html[data-theme="dark"] .bg-papier { background-color: #0e1417; }
+html[data-theme="dark"] .bg-carte { background-color: #151d21; }
+html[data-theme="dark"] .border-trait { border-color: #2a353a; }
+html[data-theme="dark"] .text-encre { color: #e6edef; }
+html[data-theme="dark"] .text-sourdine { color: #9aa7ac; }
+html[data-theme="dark"] .text-sarcelle { color: #4fb5b0; }
+html[data-theme="dark"] .text-sarcelle-fonce { color: #7fd1cc; }
+html[data-theme="dark"] .bg-sarcelle-pale { background-color: #123b3a; }
+html[data-theme="dark"] .bg-sarcelle { background-color: #0e6e6b; }
+html[data-theme="dark"] .border-sarcelle { border-color: #4fb5b0; }
+html[data-theme="dark"] .bg-ambre-fond { background-color: #2e2410; }
+html[data-theme="dark"] .border-ambre-bord { border-color: #8a6a2a; }
+html[data-theme="dark"] .text-ambre { color: #ffd37a; }
+html[data-theme="dark"] .bg-mousse-fond { background-color: #14281a; }
+html[data-theme="dark"] .text-mousse { color: #8fd49b; }
+html[data-theme="dark"] .border-mousse { border-color: #3d6b47; }
+html[data-theme="dark"] .text-alerte { color: #ff8a90; }
+html[data-theme="dark"] .bg-encre\/40 { background-color: rgba(0, 0, 0, 0.6); }
+html[data-theme="dark"] .focus-visible\:outline-sarcelle:focus-visible {
+  outline-color: #4fb5b0;
+}
+
+/* A2 — Contraste renforcé (WCAG 1.4.6 : fonds unis, textes foncés, focus 3 px) */
+html[data-contrast="high"] body { background-color: #ffffff; color: #000000; }
+html[data-contrast="high"] .text-encre { color: #000000; }
+html[data-contrast="high"] .text-sourdine { color: #1f1f1f; }
+html[data-contrast="high"] .text-sarcelle, html[data-contrast="high"] .text-sarcelle-fonce { color: #003c3a; }
+html[data-contrast="high"] .text-ambre { color: #4a2c00; }
+html[data-contrast="high"] .text-mousse { color: #004d16; }
+html[data-contrast="high"] .text-alerte { color: #7a0006; }
+html[data-contrast="high"] .border-trait { border-color: #4d4d4d; }
+html[data-contrast="high"] .border-ambre-bord { border-color: #7a4a00; }
+html[data-contrast="high"] .border-mousse { border-color: #005a1e; }
+html[data-contrast="high"] .bg-carte { background-color: #ffffff; }
+html[data-contrast="high"] .bg-papier { background-color: #ffffff; }
+html[data-contrast="high"] .bg-ambre-fond { background-color: #ffe9b3; }
+html[data-contrast="high"] .bg-mousse-fond { background-color: #d9f2de; }
+html[data-contrast="high"] .bg-sarcelle-pale { background-color: #d5f0ee; }
+html[data-contrast="high"] .focus-visible\:outline-sarcelle:focus-visible,
+html[data-contrast="high"] a:focus-visible,
+html[data-contrast="high"] button:focus-visible,
+html[data-contrast="high"] input:focus-visible {
+  outline: 3px solid #005f5c !important;
+  outline-offset: 2px;
+}
+
+/* Focus global renforcé (déjà présent, conservé en base) */
+:focus-visible {
+  outline-offset: 2px;
 }

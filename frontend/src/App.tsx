@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { User, VsmListItem, api } from "./api";
+import { useFocusTrap, usePrefs } from "./accessibility";
 import { Button } from "./components/ui";
 import { AuditTrail, Settings } from "./pages/AuditSettings";
 import { Dashboard } from "./pages/Dashboard";
@@ -20,19 +21,47 @@ const NAV: { key: View["name"]; label: string; roles?: User["role"][] }[] = [
   { key: "settings", label: "Paramètres" },
 ];
 
+const SHORTCUTS: [string, string][] = [
+  ["Ctrl+K", "Recherche globale (Palette)"],
+  ["?", "Aide des raccourcis (cette fenêtre)"],
+  ["Ctrl+,", "Ouvrir les Paramètres"],
+  ["Échap", "Fermer la recherche / l'aide"],
+  ["Tab / Maj+Tab", "Naviguer entre les champs du VSM"],
+  ["↵", "Confirmer le champ focalisé (confiance 100 %)"],
+  ["Ctrl+↵", "Enregistrer le VSM"],
+];
+
+function isTyping(e: KeyboardEvent): boolean {
+  const t = e.target as HTMLElement | null;
+  return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [view, setView] = useState<View>({ name: "dashboard" });
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  // D1 — préférences d'accessibilité appliquées au démarrage (et à chaque
+  // modification dans Paramètres) ; A/B/C selon outputs/AUDIT_ACCESSIBILITE.md
+  usePrefs();
 
-  // Recherche globale Ctrl+K
+  // Raccourcis globaux : Ctrl+K (recherche), ? (aide), Ctrl+, (paramètres),
+  // Échap (fermer les modales). Les raccourcis « ? »/« Ctrl+, » sont ignorés
+  // pendant la saisie dans un champ (C1 — aide accessible WCAG 2.1.1).
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPaletteOpen((o) => !o);
+      } else if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+        e.preventDefault();
+        setView({ name: "settings" });
+      } else if (e.key === "?" && !isTyping(e)) {
+        e.preventDefault();
+        setHelpOpen((o) => !o);
       } else if (e.key === "Escape") {
         setPaletteOpen(false);
+        setHelpOpen(false);
       }
     };
     window.addEventListener("keydown", h);
@@ -49,6 +78,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-papier font-corps text-encre">
+      {/* B1 — zone d'annonces ARIA (lecteur d'écran) */}
+      <div id="vsm-live" aria-live="polite" className="sr-only" role="status" />
       <a href="#contenu" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-sarcelle focus:px-3 focus:py-1.5 focus:text-white">
         Aller au contenu
       </a>
@@ -69,6 +100,10 @@ export default function App() {
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-3 text-sm">
+            <button onClick={() => setHelpOpen(true)} aria-label="Aide des raccourcis"
+              className="rounded border border-trait px-2 py-1 text-xs font-medium text-sourdine hover:bg-papier focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle">
+              Raccourcis (?)
+            </button>
             <span className="text-sourdine">{user.username} · {user.role}</span>
             <Button variant="secondary" onClick={logout}>Se déconnecter</Button>
           </div>
@@ -104,20 +139,24 @@ export default function App() {
       {paletteOpen && (
         <Palette onClose={() => setPaletteOpen(false)} onGoVsm={(id) => { setView({ name: "vsm", vsmId: id }); setPaletteOpen(false); }} />
       )}
+      {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }
 
-/** Palette de recherche globale (Ctrl+K) : filtre les VSM par identifiant/statut. */
+/** Palette de recherche globale (Ctrl+K) : filtre les VSM par identifiant/statut.
+ *  B2 — focus piégé dans la modale et restauré à la fermeture (WCAG 2.4.3). */
 function Palette({ onClose, onGoVsm }: { onClose: () => void; onGoVsm: (id: string) => void }) {
   const [q, setQ] = useState("");
   const [items, setItems] = useState<VsmListItem[]>([]);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(boxRef, true);
   useEffect(() => { api.listVsm().then(setItems).catch(() => setItems([])); }, []);
   const filtered = items.filter((v) => (v.id + " " + v.statut).toLowerCase().includes(q.toLowerCase()));
   return (
     <div role="dialog" aria-modal="true" aria-label="Recherche globale"
       className="fixed inset-0 z-50 flex items-start justify-center bg-encre/40 pt-24" onClick={onClose}>
-      <div className="w-full max-w-md rounded-lg border border-trait bg-carte shadow-lg" onClick={(e) => e.stopPropagation()}>
+      <div ref={boxRef} className="w-full max-w-md rounded-lg border border-trait bg-carte shadow-lg" onClick={(e) => e.stopPropagation()}>
         <input autoFocus value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="Rechercher un VSM… (Échap pour fermer)"
           aria-label="Rechercher un VSM"
@@ -134,6 +173,31 @@ function Palette({ onClose, onGoVsm }: { onClose: () => void; onGoVsm: (id: stri
             </li>
           ))}
         </ul>
+      </div>
+    </div>
+  );
+}
+
+/** Aide des raccourcis clavier (C1) — dialog accessible, focus piégé. */
+function ShortcutsHelp({ onClose }: { onClose: () => void }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(boxRef, true);
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Aide des raccourcis clavier"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-encre/40 p-4" onClick={onClose}>
+      <div ref={boxRef} className="w-full max-w-md rounded-lg border border-trait bg-carte p-5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+        <h2 className="mb-3 text-base font-semibold text-encre">Raccourcis clavier</h2>
+        <ul className="space-y-2 text-sm">
+          {SHORTCUTS.map(([keys, desc]) => (
+            <li key={keys} className="flex items-baseline justify-between gap-4">
+              <kbd className="rounded border border-trait bg-papier px-1.5 py-0.5 font-mono text-xs">{keys}</kbd>
+              <span className="text-sourdine">{desc}</span>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-4 flex justify-end">
+          <Button variant="secondary" onClick={onClose}>Fermer (Échap)</Button>
+        </div>
       </div>
     </div>
   );
