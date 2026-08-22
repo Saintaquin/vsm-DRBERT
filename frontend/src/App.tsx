@@ -6,6 +6,7 @@ import { AuditTrail, Settings } from "./pages/AuditSettings";
 import { Dashboard } from "./pages/Dashboard";
 import { DocumentViewer } from "./pages/DocumentViewer";
 import { Login } from "./pages/Login";
+import { StatsPage } from "./pages/Stats";
 import { VSMEditor } from "./pages/VSMEditor";
 
 type View =
@@ -13,11 +14,13 @@ type View =
   | { name: "vsm"; vsmId: string }
   | { name: "document"; documentId: string; highlight?: string }
   | { name: "audit" }
+  | { name: "stats" }
   | { name: "settings" };
 
 const NAV: { key: View["name"]; label: string; roles?: User["role"][] }[] = [
   { key: "dashboard", label: "Tableau de bord" },
   { key: "audit", label: "Journal d'audit", roles: ["medecin", "admin"] },
+  { key: "stats", label: "Statistiques" },
   { key: "settings", label: "Paramètres" },
 ];
 
@@ -129,6 +132,7 @@ export default function App() {
         )}
         {view.name === "document" && <DocumentViewer documentId={view.documentId} highlight={view.highlight} />}
         {view.name === "audit" && <AuditTrail />}
+        {view.name === "stats" && <StatsPage />}
         {view.name === "settings" && <Settings user={user} />}
       </main>
 

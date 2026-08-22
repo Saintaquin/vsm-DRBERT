@@ -418,6 +418,100 @@ def export_vsm(vsm_id: str, fmt: str = "html", sess: dict = Depends(current_sess
     raise HTTPException(400, "Format : html | markdown | pdf")
 
 
+# ----------------------------------------------------------------- stats
+# Statistiques anonymes (audit de faisabilité : outputs/AUDIT_STATISTIQUES.md ;
+# ADR-0007). Garde-fous conformité (art. 9 du règlement / RGPD) :
+#  - agrégats UNIQUEMENT (comptages) — aucun détail patient, aucun token ;
+#  - le coffre-fort de mapping n'est JAMAIS lu (aucun lien vers l'identité) ;
+#  - petits effectifs masqués (secret statistique CNIL : n < SEUIL → « < seuil ») ;
+#  - calcul à la demande (recalculé à chaque requête) → le droit à l'oubli
+#    (suppression d'un dossier) se répercute automatiquement ;
+#  - aucun croisement avec des sources externes ; 100 % local.
+_STATS_MIN_COUNT = int(os.environ.get("VSM_STATS_MIN_COUNT", "5"))
+_STATS_AVERTISSEMENT = (
+    "Statistiques descriptives locales, calculées sur les VSM de cette "
+    "machine. Échantillon potentiellement non représentatif ; aucune "
+    "interprétation médicale. Effectifs inférieurs au seuil de secret "
+    f"statistique (n < {_STATS_MIN_COUNT}) affichés « < {_STATS_MIN_COUNT} »."
+)
+
+
+@app.get("/stats")
+def stats(sess: dict = Depends(current_session)):
+    from collections import Counter
+    from datetime import datetime
+
+    store: EncryptedStore = sess["store"]
+    vsm_meta = store.list_vsm()
+
+    par_statut: Counter[str] = Counter()
+    par_mois: Counter[str] = Counter()
+    pathologies: Counter[tuple[str, str]] = Counter()  # (code, libellé)
+    traitements: Counter[tuple[str, str]] = Counter()
+    completude: dict[str, list[float]] = {}
+
+    for meta in vsm_meta:
+        par_statut[meta["statut"]] += 1
+        try:
+            vsm = store.load_vsm(meta["id"])
+        except KeyError:
+            continue
+        gen = vsm.get("date_generation", "")
+        if gen:
+            try:
+                par_mois[datetime.fromisoformat(gen).strftime("%Y-%m")] += 1
+            except ValueError:
+                par_mois[gen[:7]] += 1
+        for section, items in vsm.get("sections", {}).items():
+            if not isinstance(items, list):
+                continue
+            vals = [i.get("confiance", 0) for i in items if isinstance(i, dict)]
+            completude.setdefault(section, []).extend(vals)
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                code = it.get("code_normalise")
+                if not isinstance(code, dict) or not code.get("code"):
+                    continue
+                key = (str(code["code"]), str(code.get("libelle_officiel", "")))
+                if code.get("systeme") == "CIM-10":
+                    pathologies[key] += 1
+                elif code.get("systeme") == "ATC":
+                    traitements[key] += 1
+
+    def top(counter: Counter, limit: int = 10) -> list[dict]:
+        out = []
+        for (code, libelle), count in counter.most_common(limit):
+            masque = count < _STATS_MIN_COUNT
+            out.append(
+                {
+                    "code": code,
+                    "libelle": libelle,
+                    "count": None if masque else count,
+                    "masque": masque,
+                }
+            )
+        return out
+
+    # Événement d'audit sans PII (seulement le volume)
+    store.append_audit(
+        sess["user"]["username"], "stats_viewed", {"vsms": len(vsm_meta)}
+    )
+
+    return {
+        "total": len(vsm_meta),
+        "par_statut": dict(par_statut),
+        "par_mois": dict(sorted(par_mois.items())),
+        "pathologies": top(pathologies),
+        "traitements": top(traitements),
+        "completude": {
+            k: round(sum(v) / len(v), 3) if v else 0.0 for k, v in completude.items()
+        },
+        "avertissement": _STATS_AVERTISSEMENT,
+        "seuil": _STATS_MIN_COUNT,
+    }
+
+
 # ----------------------------------------------------------------- audit
 @app.get("/audit")
 def audit(limit: int = 200, sess: dict = Depends(current_session)):

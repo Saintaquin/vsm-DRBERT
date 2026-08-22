@@ -133,6 +133,21 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
   aucune donnée patient), 100 % local ; backend inchangé (93 tests verts).
 - ADR-0006 ; checklist de recette D3 dans le rapport d'audit.
 
+### Statistiques anonymes — visualisations locales (POC validé)
+
+- Audit de faisabilité (règlement art. 9 + RGPD/CNIL + HAS) → **POC implémenté**.
+- `GET /stats` (`src/ui_backend/main.py`) : nb VSM (total/statut/période),
+  récurrences **CIM-10** (pathologies) et **ATC** (traitements), complétude —
+  agrégats uniquement, **sans jamais lire le coffre de mapping** (aucun lien
+  identité), **masquage n < 5** (secret statistique CNIL, seuil configurable
+  `VSM_STATS_MIN_COUNT`), **recalcul à la demande** (le droit à l'oubli
+  met à jour les stats — testé), aucun croisement externe, avertissement
+  « descriptif, non représentatif ».
+- Frontend : page « Statistiques » (cartes + graphiques **SVG maison**, aucun
+  CDN) — `pages/Stats.tsx`, entrée de navigation.
+- ADR-0007 ; rapport : `outputs/AUDIT_STATISTIQUES.md`.
+- **Tests** : 96 (+3 : agrégats/masquage, absence de détail patient, oubli).
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

@@ -61,6 +61,19 @@ export interface Health {
   available_engines?: string[];
 }
 
+export interface StatsEntry { code: string; libelle: string; count: number | null; masque: boolean; }
+
+export interface Stats {
+  total: number;
+  par_statut: Record<string, number>;
+  par_mois: Record<string, number>;
+  pathologies: StatsEntry[];
+  traitements: StatsEntry[];
+  completude: Record<string, number>;
+  avertissement: string;
+  seuil: number;
+}
+
 export const api = {
   health: () => request<Health>("/health"),
   bootstrap: (username: string, password: string, role: string) =>
@@ -88,5 +101,6 @@ export const api = {
     request<Vsm>(`/vsm/${id}/validate`, { method: "POST", body: JSON.stringify(body) }),
   exportHtmlUrl: (id: string) => `/vsm/${id}/export?fmt=html`,
   exportPdfUrl: (id: string) => `/vsm/${id}/export?fmt=pdf`,
+  stats: () => request<Stats>("/stats"),
   audit: (limit = 200) => request<{ chain_valid: boolean; entries: AuditEntry[] }>(`/audit?limit=${limit}`),
 };

@@ -172,6 +172,109 @@ def test_health_lists_available_engines(client):
     assert "tesseract" in engines  # moteur CPU de référence toujours présent
 
 
+def _seed_vsm(store, vsm_id, statut, codes, extra=None):
+    """Crée un VSM de test dans le store (sans OCR — rapide)."""
+    sections = {}
+    for section, entries in codes.items():
+        sections[section] = [
+            {
+                "valeur": f"item-{i}",
+                "confiance": 0.8,
+                "source": {"passage": "x", "offset_debut": 0, "offset_fin": 1},
+                "code_normalise": {
+                    "systeme": sys_,
+                    "code": code,
+                    "libelle_officiel": f"lib-{code}",
+                },
+            }
+            for i, (sys_, code) in enumerate(entries)
+        ]
+    vsm = {
+        "schema_version": "1.1.0",
+        "document_id": vsm_id,
+        "date_generation": "2026-08-01T10:00:00+00:00",
+        "statut": statut,
+        "patient": {},
+        "medecin_traitant": {},
+        "sections": sections,
+    }
+    if extra:
+        vsm.update(extra)
+    store.store_vsm(vsm_id, vsm_id, vsm)
+
+
+def test_stats_aggregates_and_masking(client):
+    # 6 VSM « E11 » + 1 VSM « J45 » : E11 (6, affiché) ; J45 (1, masqué).
+    headers = _login(client)
+    # Accès au store de la session du TestClient (pas d'OCR — VSM injectés).
+    import src.ui_backend.main as m
+
+    sess = m._sessions[client.cookies.get("vsm_session")]
+    st = sess["store"]
+    for i in range(6):
+        _seed_vsm(
+            st, f"vsm_e{i}", "signe", {"pathologies_actives": [("CIM-10", "E11")]}
+        )
+    _seed_vsm(st, "vsm_j", "a_valider", {"pathologies_actives": [("CIM-10", "J45")]})
+
+    r = client.get("/stats", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 7
+    assert body["par_statut"] == {"signe": 6, "a_valider": 1}
+    # E11 (6 ≥ 5) → count réel ; J45 (1 < 5) → masqué
+    by_code = {p["code"]: p for p in body["pathologies"]}
+    assert by_code["E11"]["count"] == 6 and by_code["E11"]["masque"] is False
+    assert by_code["J45"]["count"] is None and by_code["J45"]["masque"] is True
+    assert body["seuil"] == 5
+    assert "non représentatif" in body["avertissement"]
+
+
+def test_stats_no_patient_detail(client):
+    headers = _login(client)
+    import src.ui_backend.main as m
+
+    sess = m._sessions[client.cookies.get("vsm_session")]
+    _seed_vsm(
+        sess["store"],
+        "vsm_x",
+        "valide",
+        {
+            "traitements_long_cours": [("ATC", "A10BA02"), ("ATC", "J01CA04")],
+        },
+        extra={
+            "patient": {
+                "identite": {"valeur": "[PATIENT_001]", "confiance": 1.0, "source": {}}
+            },
+        },
+    )
+    r = client.get("/stats", headers=headers)
+    body = r.json()
+    # Aucun détail patient / token dans la réponse
+    assert "PATIENT" not in str(body)
+    assert "identite" not in str(body)
+    codes = {t["code"] for t in body["traitements"]}
+    assert codes == {"A10BA02", "J01CA04"}  # les codes normalisés restent visibles
+    assert body["traitements"][0]["masque"] is True  # 1 occurrence < 5
+
+
+def test_stats_reflect_right_to_be_forgotten(client):
+    # Recalcul à la demande : supprimer un dossier le retire des stats.
+    headers = _login(client)
+    import src.ui_backend.main as m
+
+    sess = m._sessions[client.cookies.get("vsm_session")]
+    st = sess["store"]
+    _seed_vsm(st, "vsm_a", "signe", {"pathologies_actives": [("CIM-10", "E11")]})
+    _seed_vsm(st, "vsm_b", "signe", {"pathologies_actives": [("CIM-10", "E11")]})
+    assert client.get("/stats", headers=headers).json()["total"] == 2
+    st.delete_dossier("vsm_a")
+    body = client.get("/stats", headers=headers).json()
+    assert body["total"] == 1
+    # E11 passe sous le seuil après oubli → masqué
+    assert body["pathologies"][0]["masque"] is True
+
+
 def test_upload_limit_configurable(client_small_limit):
     # VSM_MAX_UPLOAD_MB=1 : un fichier de 2 Mo est rejeté (413), 1 Ko passe.
     headers = _login(client_small_limit)
