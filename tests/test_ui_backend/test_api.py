@@ -143,6 +143,35 @@ def test_process_invalid_nlp_engine_rejected(client):
     assert r.status_code == 422
 
 
+def test_process_unlimited_engine_rejected_without_gpu(client, tmp_path):
+    # Sans carte NVIDIA, le moteur « unlimited » n'existe pas → 400 explicite
+    # (et non 500). Il n'apparaît pas non plus dans /health.
+    assert "unlimited" not in client.get("/health").json()["available_engines"]
+    headers = _login(client)
+    from PIL import Image
+
+    p = tmp_path / "mini.png"
+    Image.new("L", (40, 40), 255).save(p)
+    up = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("mini.png", p.read_bytes(), "image/png")},
+    )
+    doc_id = up.json()["document_id"]
+    r = client.post(
+        f"/documents/{doc_id}/process",
+        headers=headers,
+        json={"engine": "unlimited", "anonymize_mode": "pseudo"},
+    )
+    assert r.status_code == 400
+    assert "unlimited" in r.json()["detail"]
+
+
+def test_health_lists_available_engines(client):
+    engines = client.get("/health").json()["available_engines"]
+    assert "tesseract" in engines  # moteur CPU de référence toujours présent
+
+
 def test_upload_limit_configurable(client_small_limit):
     # VSM_MAX_UPLOAD_MB=1 : un fichier de 2 Mo est rejeté (413), 1 Ko passe.
     headers = _login(client_small_limit)

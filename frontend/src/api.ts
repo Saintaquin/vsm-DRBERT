@@ -58,6 +58,7 @@ export interface ProcessResult {
 export interface Health {
   status: string;
   max_upload_mb?: number;
+  available_engines?: string[];
 }
 
 export const api = {

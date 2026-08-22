@@ -104,6 +104,20 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
   (`moteur_effectif`, repli inclus).
 - **Tests** : 86 (10 ajoutés : config, métadonnées, repli, parsing JSON, API).
 
+### Moteur OCR optionnel « Unlimited-OCR » (baidu, licence MIT — GPU NVIDIA)
+
+- Étude de https://github.com/baidu/Unlimited-OCR (OCR documentaire panoptique
+  en une passe, marqueurs de structure `<|det|>`) → ADR-0005.
+- `src/ingestion_ocr/ocr_engines.py` : adaptateur `UnlimitedOCREngine`
+  (torch/transformers, strictement local, sortie nettoyée des marqueurs).
+- **Exigence carte NVIDIA** : sans `torch.cuda.is_available()`, le moteur
+  **n'existe pas** (absent de `ENGINES`, de `/health`, de l'UI ; API → 400).
+- `GET /health` expose `available_engines` ; sélecteur OCR dans l'UI
+  (n'affiche « Unlimited-OCR (NVIDIA) » que si disponible).
+- **Tests** : 93 (+5 : nettoyage marqueurs, gating GPU, rejet API, /health).
+- Recette sur poste NVIDIA documentée (benchmark CER/WER français) —
+  `outputs/AUDIT_OCR_UNLIMITED.md` ; Tesseract+fra reste le défaut.
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

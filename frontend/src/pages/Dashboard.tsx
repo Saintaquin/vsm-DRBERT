@@ -16,14 +16,22 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
   const [anonymizeMode, setAnonymizeMode] = useState<"pseudo" | "strict">("pseudo");
   const [nlpEngine, setNlpEngine] = useState<"rules" | "llm">("rules");
   const [maxUploadMb, setMaxUploadMb] = useState<number>(50);
+  const [ocrEngine, setOcrEngine] = useState<string>("tesseract");
+  const [availableEngines, setAvailableEngines] = useState<string[]>(["tesseract"]);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // La limite d'upload est configurable côté serveur (VSM_MAX_UPLOAD_MB) ;
-  // on l'affiche telle que le backend la publie via /health.
+  // Configuration publiée par le backend : limite d'upload et moteurs OCR
+  // réellement disponibles (« unlimited » n'apparaît que sur poste NVIDIA).
   useEffect(() => {
     api.health()
-      .then((h) => { if (typeof h.max_upload_mb === "number") setMaxUploadMb(h.max_upload_mb); })
-      .catch(() => { /* backend indisponible : garder la valeur par défaut */ });
+      .then((h) => {
+        if (typeof h.max_upload_mb === "number") setMaxUploadMb(h.max_upload_mb);
+        if (Array.isArray(h.available_engines) && h.available_engines.length) {
+          setAvailableEngines(h.available_engines);
+          setOcrEngine(h.available_engines.includes("tesseract") ? "tesseract" : h.available_engines[0]);
+        }
+      })
+      .catch(() => { /* backend indisponible : garder les valeurs par défaut */ });
   }, []);
 
   const refresh = async () => {
@@ -45,7 +53,7 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
     try {
       const { document_id } = await api.upload(file);
       setBusy("Traitement en cours (OCR → anonymisation → extraction → VSM)…");
-      const result = await api.process(document_id, "tesseract", anonymizeMode, nlpEngine);
+      const result = await api.process(document_id, ocrEngine, anonymizeMode, nlpEngine);
       setLastReport(result);
       await refresh();
     } catch (err) {
@@ -95,6 +103,20 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
                   onChange={() => setNlpEngine(m)}
                   className="accent-sarcelle focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle" />
                 {m === "rules" ? "Règles (rapide, offline)" : "LLM local (plus précis — modèle requis)"}
+              </label>
+            ))}
+          </fieldset>
+          <fieldset className="flex flex-wrap items-center gap-4">
+            <legend className="sr-only">Moteur OCR</legend>
+            <span className="text-sm font-medium text-encre">OCR :</span>
+            {availableEngines.map((m) => (
+              <label key={m} className="inline-flex cursor-pointer items-center gap-1.5 text-sm">
+                <input type="radio" name="ocr" value={m} checked={ocrEngine === m}
+                  onChange={() => setOcrEngine(m)}
+                  className="accent-sarcelle focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle" />
+                {m === "unlimited"
+                  ? "Unlimited-OCR (NVIDIA, haute qualité)"
+                  : m === "tesseract" ? "Tesseract (défaut, CPU)" : m}
               </label>
             ))}
           </fieldset>

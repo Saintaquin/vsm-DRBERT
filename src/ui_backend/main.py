@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from src.anonymization.mapping_vault import MappingVault
 from src.extraction_nlp.pipeline import run_pipeline as nlp_pipeline
+from src.ingestion_ocr.ocr_engines import ENGINES
 from src.ingestion_ocr.pipeline import run_pipeline as ocr_pipeline
 from src.storage.auth import AuthManager
 from src.storage.encrypted_store import EncryptedStore
@@ -115,7 +116,13 @@ def current_session(
 # ----------------------------------------------------------------- auth
 @app.get("/health")
 def health():
-    return {"status": "ok", "max_upload_mb": MAX_UPLOAD_MB}
+    return {
+        "status": "ok",
+        "max_upload_mb": MAX_UPLOAD_MB,
+        # Moteurs OCR réellement disponibles sur ce poste — « unlimited »
+        # n'apparaît QUE si une carte NVIDIA est détectée (docs/ADR/0005).
+        "available_engines": sorted(ENGINES),
+    }
 
 
 @app.post("/auth/bootstrap")
@@ -244,6 +251,10 @@ def process(document_id: str, body: ProcessIn, sess: dict = Depends(current_sess
             anonymize_mode=body.anonymize_mode,
             dossier_id=document_id,
         )
+    except ValueError as exc:
+        # Moteur inconnu ou indisponible sur ce poste (ex. « unlimited »
+        # sans carte NVIDIA) → 400 explicite, jamais 500.
+        raise HTTPException(400, str(exc)) from None
     finally:
         os.unlink(tmp_path)
 
