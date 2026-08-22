@@ -86,3 +86,25 @@ def test_llm_confidence_is_conservative():
     # La confiance LLM est sous le seuil 0,7 → champs « À valider » (XAI)
     assert LLM_CONFIDENCE < 0.7
     assert NLP_ENGINE_LLM == "llama-3.1-8b-q4-local"
+
+
+def test_suggest_model_by_ram(monkeypatch):
+    # Guidance matérielle : la recommandation suit la RAM détectée
+    monkeypatch.setattr(llm_mod, "detect_ram_gb", lambda: 16.0)
+    assert llm_mod.suggest_model() == "mistral-nemo-12b"
+    monkeypatch.setattr(llm_mod, "detect_ram_gb", lambda: 10.0)
+    assert llm_mod.suggest_model() == "qwen2.5-7b"
+    monkeypatch.setattr(llm_mod, "detect_ram_gb", lambda: 8.0)
+    assert llm_mod.suggest_model() == "qwen2.5-3b"  # prudent sur 8 Go
+    monkeypatch.setattr(llm_mod, "detect_ram_gb", lambda: 4.0)
+    assert llm_mod.suggest_model() == "qwen2.5-3b"
+
+
+def test_light_model_for_small_machines():
+    # Machine < 16 Go : une option Apache 2.0 ≤ 2 Go doit exister
+    light = [
+        m
+        for m in llm_mod.RECOMMENDED_MODELS
+        if m["licence"] == "Apache 2.0" and m["taille_gb"] <= 2.0
+    ]
+    assert light and light[0]["key"] == "qwen2.5-3b"

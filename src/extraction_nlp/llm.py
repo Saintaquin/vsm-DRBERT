@@ -84,7 +84,63 @@ RECOMMENDED_MODELS = [
         "francais": "Correct (moins précis)",
         "note": 2,
     },
+    {
+        "key": "qwen2.5-3b",
+        "nom": "Qwen 2.5 3B Instruct (léger, machines 4-8 Go)",
+        "hf_repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+        "hf_file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+        "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+        "taille_gb": 2.0,
+        "ram_min_gb": 4,
+        "licence": "Apache 2.0",
+        "francais": "Correct (multilingue)",
+        "note": 3,
+    },
 ]
+
+
+def detect_ram_gb() -> float:
+    """RAM totale détectée (Go) — Windows (ctypes) et POSIX (/proc/meminfo)."""
+    try:
+        if os.name == "nt":  # pragma: no cover
+            import ctypes
+
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            ms = _MEMORYSTATUSEX(dwLength=ctypes.sizeof(_MEMORYSTATUSEX))
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
+            return ms.ullTotalPhys / (1024**3)
+        with open("/proc/meminfo") as f:  # pragma: no cover - POSIX
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) / 1024 / 1024
+    except Exception:  # pragma: no cover - détection best-effort
+        pass
+    return 16.0
+
+
+def suggest_model() -> str:
+    """Modèle conseillé selon la RAM détectée (voir --list).
+
+    Règles prudentes : modèle + contexte + OS + application doivent tenir en
+    mémoire sans swap (un 7B Q4 ≈ 5 Go à l'inférence)."""
+    ram = detect_ram_gb()
+    if ram >= 14:
+        return "mistral-nemo-12b"
+    if ram >= 9:
+        return "qwen2.5-7b"
+    return "qwen2.5-3b"
 
 
 def default_model_path() -> Path:
@@ -117,7 +173,12 @@ def download_model(
     Strictement hors flux de traitement : à lancer par l'administrateur, au
     préalable (aucune donnée patient n'est impliquée)."""
     if key is None:
-        key = os.environ.get("VSM_LLM_MODEL", RECOMMENDED_MODELS[0]["key"])
+        key = os.environ.get("VSM_LLM_MODEL") or suggest_model()
+        ram = detect_ram_gb()
+        print(
+            f"RAM détectée : {ram:.0f} Go → modèle conseillé : "
+            f"{key} ({next(m['nom'] for m in RECOMMENDED_MODELS if m['key'] == key)})"
+        )
     try:
         meta = next(m for m in RECOMMENDED_MODELS if m["key"] == key)
     except StopIteration:
@@ -179,12 +240,15 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.list:
+        print(
+            f"RAM détectée : {detect_ram_gb():.0f} Go → modèle conseillé : "
+            f"{suggest_model()} (note {next(m['note'] for m in RECOMMENDED_MODELS if m['key'] == suggest_model())}/5)"
+        )
         print("Modèles disponibles (audit ADR-0004) :")
         for m in RECOMMENDED_MODELS:
             star = (
                 " *"
-                if m["key"]
-                == os.environ.get("VSM_LLM_MODEL", RECOMMENDED_MODELS[0]["key"])
+                if m["key"] == (os.environ.get("VSM_LLM_MODEL") or suggest_model())
                 else ""
             )
             print(

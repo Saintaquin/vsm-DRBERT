@@ -51,11 +51,26 @@ Cet ADR audite les candidats et fixe le modèle par défaut.
 
 - **Modèle par défaut : Mistral NeMo 12B Instruct Q4_K_M** (~7,2 Go, Apache 2.0,
   excellent français) — pour les postes 16 Go, qualité maximale, licence propre.
-- **Repli léger documenté : Qwen 2.5 7B Instruct Q4_K_M** (~4,7 Go, Apache 2.0)
-  pour les machines 8 Go.
-- Les deux sont sélectionnables via `python -m src.extraction_nlp.llm --model
-  {mistral-nemo-12b|qwen2.5-7b}` ; le choix s'opère à l'installation par
-  l'administrateur (`VSM_LLM_MODEL` / `VSM_LLM_MODEL_PATH`).
+- **Repli léger documenté** selon la RAM détectée (`--list` conseille
+  automatiquement) :
+  - **9–14 Go** : Qwen 2.5 7B Instruct Q4_K_M (~4,7 Go, Apache 2.0) ;
+  - **< 9 Go** : Qwen 2.5 3B Instruct Q4_K_M (~2,0 Go, Apache 2.0) —
+    recommandation prudente : modèle + contexte + OS + application doivent
+    tenir en mémoire sans swap.
+- Sélection via `python -m src.extraction_nlp.llm --model {mistral-nemo-12b|
+  qwen2.5-7b|qwen2.5-3b}` ; choix à l'installation par l'administrateur
+  (`VSM_LLM_MODEL` / `VSM_LLM_MODEL_PATH`).
+
+## Note — contrainte de performance du règlement
+
+Le règlement du concours **ne fixe aucune contrainte matérielle ou de temps**
+(RAM, CPU, vitesse) : ni l'article 5, ni l'article 7, ni l'annexe 1 ne
+l'imposent. Les seuls critères liés sont « *Performance de l'extraction IA*
+(25 %) » — la **qualité** (précision/rappel) — et « *Facilité d'usage et
+ergonomie* (10 %) ». L'objectif « 16 Go » vient de l'ADR-0001 (hypothèse de
+déploiement du projet), pas du règlement. Le moteur **règles reste le défaut
+et fonctionne sur toute machine** ; le LLM est optionnel et son choix
+s'adapte à la RAM disponible sans impact sur la conformité.
 
 ## Conséquences
 
