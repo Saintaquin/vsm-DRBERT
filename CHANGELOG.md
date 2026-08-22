@@ -28,7 +28,7 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
   (compte-rendu d'anapath) aux formats réels ; police de repli Windows.
 - **Tests** : 65 tests (21 ajoutés : formats réels, passe 2, CSRF, identité).
 
-### Format VSM conforme au gabarit HAS (contexte/ : exemples de vrais VSM)
+### Format VSM conforme au gabarit HAS (aligné sur des exemples de vrais VSM)
 
 - **Rendu** (`src/vsm_generation/renderer.py`) : le document généré (markdown,
   HTML, PDF) reprend la structure d'un vrai Volet de Synthèse Médicale :

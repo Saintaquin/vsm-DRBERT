@@ -1,5 +1,5 @@
 """Rendu du VSM : markdown, HTML et PDF conformes au gabarit HAS du Volet de
-Synthèse Médicale (voir docs/gabarit_vsm.md et contexte/ pour des exemples).
+Synthèse Médicale (voir docs/gabarit_vsm.md).
 
 Structure du document généré (9 rubriques numérotées) :
   1. Identification du patient (pseudonymisée)
