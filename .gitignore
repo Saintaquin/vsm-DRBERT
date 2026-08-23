@@ -15,3 +15,7 @@ outputs/
 .pytest_cache/
 .ruff_cache/
 frontend/tsconfig.tsbuildinfo
+
+# Documents de communication (règlement du concours, données fournies) :
+# CONSERVÉS LOCALEMENT UNIQUEMENT — jamais commités ni poussés sur GitHub.
+reglements/
