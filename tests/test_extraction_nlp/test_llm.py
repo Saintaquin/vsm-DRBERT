@@ -145,27 +145,52 @@ def test_prompt_truncation():
     assert "x" * 501 not in msgs[1]["content"]
 
 
-def test_llm_feasible_ram_guard(monkeypatch, tmp_path):
-    # Prévention du « traitement infini » : le LLM n'est PAS lancé si la RAM
-    # disponible est insuffisante pour le modèle (marge incluse).
+def test_llm_attemptable_when_model_present(monkeypatch, tmp_path):
+    # Exigence « LLM sur toutes machines » : le LLM est TENTÉ dès que le modèle
+    # est présent — la RAM ne bloque plus (juste un avertissement).
     model = tmp_path / "model.gguf"
     model.write_bytes(b"GGUF" + b"\x00" * (2 * 1024 * 1024))  # ~2 Mo
     monkeypatch.setattr(llm_mod, "default_model_path", lambda: model)
-    monkeypatch.setattr(llm_mod, "available_ram_gb", lambda: 0.5)  # 0,5 Go libre
-    ok, reason = llm_mod.llm_feasible()
-    assert ok is False
-    assert "RAM" in reason and "0.5" in reason
-    monkeypatch.setattr(llm_mod, "available_ram_gb", lambda: 10.0)
-    ok, _ = llm_mod.llm_feasible()
-    assert ok is True
+    assert llm_mod.llm_attemptable() is True
+    # avertissement (non bloquant) si RAM juste
+    monkeypatch.setattr(llm_mod, "available_ram_gb", lambda: 0.5)
+    assert "lent" in llm_mod.llm_ram_warning()
+    monkeypatch.setattr(llm_mod, "available_ram_gb", lambda: 20.0)
+    assert llm_mod.llm_ram_warning() == ""
+    # sans modèle → non tenté
+    monkeypatch.setattr(llm_mod, "default_model_path", lambda: tmp_path / "absent.gguf")
+    assert llm_mod.llm_attemptable() is False
 
 
-def test_extract_llm_skipped_when_infeasible(monkeypatch):
-    # engine="llm" mais infaisable (RAM) → on ne tente JAMAIS llama.cpp,
-    # on retombe directement sur les règles.
+def test_llm_timeout_falls_back_to_rules(monkeypatch):
+    # Timeout : une inférence trop longue (machine lente) bascule sur les
+    # règles au lieu de bloquer indéfiniment.
     from src.extraction_nlp import entity_extractor as ee
 
-    monkeypatch.setattr(llm_mod, "llm_feasible", lambda: (False, "RAM insuffisante"))
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
+    monkeypatch.setattr(ee, "_LLM_ABORTED", False)
+
+    def slow_llm(text):  # pragma: no cover - doit dépasser le délai
+        import time
+
+        time.sleep(1.0)
+        return []
+
+    monkeypatch.setattr(ee, "extract_entities_llm", slow_llm)
+    ents, timed_out = ee._extract_llm_with_timeout("Texte.", timeout=0.05)
+    assert timed_out is True and ents is None
+    # extract_entities avec un petit timeout → règles (pas de blocage)
+    monkeypatch.setattr(llm_mod, "LLM_INFERENCE_TIMEOUT_SEC", 0.05)
+    ents = ee.extract_entities("ANTECEDENTS : Diabete de type 2.", engine="llm")
+    assert any(e.section == "antecedents" for e in ents)
+
+
+def test_extract_llm_skipped_when_model_absent(monkeypatch):
+    # Modèle absent → on ne tente jamais llama.cpp, règles directes.
+    from src.extraction_nlp import entity_extractor as ee
+
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: False)
+    monkeypatch.setattr(ee, "_LLM_ABORTED", False)
     called = {"llm": False}
 
     def fake_llm(text):  # pragma: no cover - ne doit jamais être appelée
@@ -183,8 +208,13 @@ def test_llm_empty_result_falls_back_to_rules(monkeypatch):
     # petit modèle), les règles prennent le relais au lieu d'un VSM vide.
     from src.extraction_nlp import entity_extractor as ee
 
-    monkeypatch.setattr(llm_mod, "llm_feasible", lambda: (True, ""))
-    monkeypatch.setattr(ee, "extract_entities_llm", lambda text: [])
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
+    monkeypatch.setattr(ee, "_LLM_ABORTED", False)
+
+    def fake_llm(text):
+        return []
+
+    monkeypatch.setattr(ee, "extract_entities_llm", fake_llm)
     ents = ee.extract_entities(
         "ANTECEDENTS : Diabete de type 2.\nALLERGIES : Penicilline.", engine="llm"
     )
@@ -196,7 +226,9 @@ def test_llm_non_empty_result_is_kept(monkeypatch):
     from src.extraction_nlp import entity_extractor as ee
     from src.extraction_nlp.entity_extractor import ExtractedEntity
 
-    monkeypatch.setattr(llm_mod, "llm_feasible", lambda: (True, ""))
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
+    monkeypatch.setattr(ee, "_LLM_ABORTED", False)
+
     monkeypatch.setattr(
         ee,
         "extract_entities_llm",

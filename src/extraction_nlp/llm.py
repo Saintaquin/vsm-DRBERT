@@ -205,28 +205,38 @@ def available_ram_gb() -> float:
     return detect_ram_gb()
 
 
-# Marge de sécurité au-delà du poids du modèle : contexte, overhead llama.cpp,
-# OS + application. Un modèle ne doit JAMAIS tourner en échange disque (swap).
+# Marge de référence au-delà du poids du modèle (contexte, overhead, OS+app) :
+# sert uniquement à produire un AVERTISSEMENT « le LLM risque d'être lent » —
+# ne BLOQUE PLUS le LLM (exigence : LLM sur toutes les machines, même lentes).
 _LLM_RAM_MARGIN_GB = 1.5
+# Délai maximal d'une inférence LLM en secondes (configurable) : au-delà, repli
+# automatique sur les règles (jamais « infini »). Sur les machines lentes, le
+# LLM est quand même TENTÉ ; s'il dépasse ce délai, on bascule sur les règles.
+LLM_INFERENCE_TIMEOUT_SEC = int(os.environ.get("VSM_LLM_TIMEOUT_SEC", "300"))
 
 
-def llm_feasible() -> tuple[bool, str]:
-    """Le LLM peut-il tourner sur CE poste, MAINTENANT ?
-    (modèle présent + RAM disponible suffisante) → (ok, raison si non ok).
-    Prévention du « traitement infini » : sans ce contrôle, llama.cpp charge
-    le modèle même avec 0,5 Go libres → swap/OOM → job bloqué ou en échec."""
+def llm_attemptable() -> bool:
+    """Le LLM doit-il être TENTÉ ? Oui dès que le modèle est présent.
+    (Exigence : LLM sur toutes les machines, même lentes — la RAM ne bloque
+    plus ; un timeout + repli règles préviennent le blocage infini.)"""
+    return model_available()
+
+
+def llm_ram_warning() -> str:
+    """Avertissement (non bloquant) si la RAM disponible est juste pour le
+    modèle : le LLM sera tenté mais risque d'être lent (swap)."""
     if not model_available():
-        return False, "modèle LLM non téléchargé (python -m src.extraction_nlp.llm)"
+        return ""
     taille_gb = default_model_path().stat().st_size / (1024**3)
     besoin = taille_gb + _LLM_RAM_MARGIN_GB
     libre = available_ram_gb()
     if libre < besoin:
-        return False, (
-            f"RAM disponible insuffisante pour le LLM : {libre:.1f} Go libres "
-            f"pour un besoin ≈ {besoin:.1f} Go (modèle {taille_gb:.1f} Go + "
-            "marge). Repli automatique sur le moteur de règles."
+        return (
+            f"RAM libre {libre:.1f} Go pour un besoin ≈ {besoin:.1f} Go "
+            f"(modèle {taille_gb:.1f} Go). Le LLM sera utilisé mais peut être "
+            "lent (échange disque) ; repli règles en cas de dépassement du délai."
         )
-    return True, ""
+    return ""
 
 
 def _validate_gguf(path: Path) -> bool:

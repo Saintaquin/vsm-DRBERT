@@ -117,13 +117,14 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
               </label>
             ))}
           </fieldset>
-          {!llmAvailable && (
+          {!llmAvailable ? (
             <Alerte kind="info">
-              ⚠ LLM local indisponible : {llmReason || "modèle non téléchargé"}. L'extraction utilise le
-              moteur de règles (repli automatique). Pour activer le LLM :{" "}
-              <code className="font-mono">python -m src.extraction_nlp.llm</code>
+              ⚠ LLM local non téléchargé — l'extraction utilise le moteur de règles en repli. Pour activer le LLM
+              (Qwen 2.5 3B, ~2 Go) : <code className="font-mono">python -m src.extraction_nlp.llm</code>
             </Alerte>
-          )}
+          ) : llmReason ? (
+            <Alerte kind="info">ℹ LLM en cours d'utilisation — {llmReason}</Alerte>
+          ) : null}
           <fieldset className="flex flex-wrap items-center gap-4">
             <legend className="sr-only">Moteur OCR</legend>
             <span className="text-sm font-medium text-encre">OCR :</span>

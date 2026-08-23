@@ -125,20 +125,20 @@ def current_session(
 # ----------------------------------------------------------------- auth
 @app.get("/health")
 def health():
-    from src.extraction_nlp.llm import llm_feasible
+    from src.extraction_nlp.llm import llm_attemptable, llm_ram_warning
 
-    llm_ok, llm_reason = llm_feasible()
     return {
         "status": "ok",
         "max_upload_mb": MAX_UPLOAD_MB,
         # Moteurs OCR réellement disponibles sur ce poste — « unlimited »
         # n'apparaît QUE si une carte NVIDIA est détectée (docs/ADR/0005).
         "available_engines": sorted(ENGINES),
-        # LLM local par défaut : faisable seulement si le modèle EST téléchargé
-        # ET la RAM disponible suffit (sinon repli règles automatique, sans
-        # « traitement infini » — ADR-0009).
-        "llm_available": llm_ok,
-        "llm_reason": llm_reason,
+        # LLM : « available » dès que le modèle est présent (il est TENTÉ sur
+        # toutes les machines — exigence). llm_reason = avertissement non
+        # bloquant si la RAM est juste (peut être lent) ; repli règles en cas
+        # de timeout (jamais « infini »). ADR-0009.
+        "llm_available": llm_attemptable(),
+        "llm_reason": llm_ram_warning(),
     }
 
 

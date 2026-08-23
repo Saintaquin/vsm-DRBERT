@@ -258,6 +258,23 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
 - **Tests** : 113 (+3 : découpage en lots avec numéros de page, hybride
   vide→règles, LLM non vide conservé).
 
+### LLM tenté sur TOUTES les machines (même lentes) — remplacement de la barrière RAM
+
+- **Problème** : le garde-fou RAM (marge 1,5 Go) bloquait le LLM sur les postes
+  à 8 Go → message « LLM indisponible : RAM insuffisante » alors que l'exigence
+  est un **LLM sur toutes les machines**.
+- **Correction** : le LLM est **toujours TENTÉ** dès que le modèle est présent
+  (`llm_attemptable` = modèle présent ; la RAM ne bloque plus). La RAM faible
+  ne produit qu'un **avertissement non bloquant** (`llm_ram_warning`).
+  Pour éviter le blocage infini sur machines lentes : **timeout d'inférence**
+  (`VSM_LLM_TIMEOUT_SEC`, défaut 300 s) — au-delà, repli règles + drapeau
+  global qui ne re-tente pas le LLM dans la session (évite d'empiler des
+  chargements de 2 Go). Hybride conservé (sortie vide → règles).
+- `/health` : `llm_available` = modèle présent ; `llm_reason` = avertissement
+  (peut être lent). UI : message « non téléchargé » si absent, « ℹ en cours
+  d'utilisation — peut être lent » sinon.
+- **Tests** : 114 (+1 timeout ; tests de la nouvelle sémantique).
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

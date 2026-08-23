@@ -579,23 +579,61 @@ def extract_entities_llm(
     return entities
 
 
-def extract_entities(text: str, engine: str = "rules") -> list[ExtractedEntity]:
-    if engine == "llm":
-        # Garde-fou 1 — faisabilité : ne JAMAIS lancer llama.cpp si le poste
-        # ne peut pas charger le modèle (modèle absent OU RAM insuffisante) —
-        # sinon swap/OOM → traitement « infini » et VSM jamais créé.
-        from .llm import llm_feasible
+# Drapeau global : si une inférence LLM dépasse le délai autorisé, on n'essaie
+# PLUS le LLM dans cette session (le modèle 2 Go ne serait pas fini de charger
+# → évite d'empiler plusieurs tentatives en mémoire). Repli règles ensuite.
+_LLM_ABORTED = False
 
-        feasible, _reason = llm_feasible()
-        if feasible:
-            try:  # pragma: no cover
-                ents = extract_entities_llm(text)
-                if ents:
+
+def _extract_llm_with_timeout(text: str, timeout: float):
+    """Exécute l'inférence LLM dans un thread daemon et attend `timeout` s.
+
+    Retourne (entités, a_temporisé). Sur timeout, le thread continue en
+    arrière-plan (il finira ou mourra) mais on bascule sur les règles —
+    jamais de blocage infini sur un poste lent."""
+    import threading
+
+    box: dict = {"done": False, "ents": None, "err": None}
+
+    def _run():  # pragma: no cover - nécessite llama.cpp + GGUF
+        try:
+            box["ents"] = extract_entities_llm(text)
+        except Exception as exc:  # noqa: BLE001 - rapporté en cas de timeout
+            box["err"] = exc
+        finally:
+            box["done"] = True
+
+    from .llm import LLM_INFERENCE_TIMEOUT_SEC
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout if timeout else LLM_INFERENCE_TIMEOUT_SEC)
+    if not box["done"]:
+        return None, True  # durée dépassée
+    if box["err"] is not None:
+        raise box["err"]
+    return box["ents"], False
+
+
+def extract_entities(text: str, engine: str = "rules") -> list[ExtractedEntity]:
+    global _LLM_ABORTED  # déclaration en tête (utilisé ci-dessous)
+
+    if engine == "llm":
+        # Exigence : le LLM est TENTÉ sur toutes les machines dès que le modèle
+        # est présent (la RAM ne bloque plus). Deux garde-fous évitent le
+        # blocage infini : (1) timeout sur l'inférence → repli règles si la
+        # machine est trop lente ; (2) si le LLM renvoie une sortie vide, les
+        # règles prennent le relais (hybride).
+        from .llm import llm_attemptable
+
+        if llm_attemptable() and not _LLM_ABORTED:
+            try:
+                ents, timed_out = _extract_llm_with_timeout(text, timeout=None)
+                if timed_out:
+                    _LLM_ABORTED = True  # ne plus retenter cette session
+                elif ents:
                     return ents
-                # Garde-fou 2 — hybride : si le LLM renvoie une sortie VIDE
-                # (JSON tout « [] » sur un petit modèle quantizé), on tente
-                # les règles : elles peuvent trouver du contenu que le LLM a
-                # omis. Si les deux sont vides, c'est honnête.
+                # sortie vide → hybride : on tente les règles ci-dessous
             except Exception:
                 pass  # repli documenté sur les règles (erreur d'inférence)
     return extract_entities_free_text_fallback(text, extract_entities_rules(text))
