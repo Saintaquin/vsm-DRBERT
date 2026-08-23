@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import secrets
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -59,6 +60,10 @@ app.add_middleware(
 # ----------------------------------------------------------------- état
 _sessions: dict[str, dict] = {}  # sid -> {user, csrf, key: SessionKey, store}
 SESSION_TTL = 15 * 60
+# Traitements asynchrones (longs) : job_id -> état (correction « temps infini »
+# + expiration de session pendant le traitement — voir process/process_status).
+_jobs: dict[str, dict] = {}
+_JOB_TTL = 60 * 60  # rétention des tâches terminées (purge après 1 h)
 
 
 def _get_salt() -> bytes:
@@ -237,79 +242,160 @@ async def upload(file: UploadFile, sess: dict = Depends(current_session)):
 
 @app.post("/documents/{document_id}/process")
 def process(document_id: str, body: ProcessIn, sess: dict = Depends(current_session)):
+    """Lance le traitement EN ARRIÈRE-PLAN et répond immédiatement.
+
+    Le traitement (OCR puis extraction) peut être long sur des PDF volumineux :
+    il s'exécute dans un thread ; l'UI interroge GET /documents/process/{job_id}
+    (chaque requête « touche » la session → pas d'expiration pendant le job)."""
     store: EncryptedStore = sess["store"]
     try:
-        content = store.load_document(document_id)
+        store.load_document(document_id)
         meta = next(d for d in store.list_documents() if d["id"] == document_id)
     except (KeyError, StopIteration):
         raise HTTPException(404, "Document inconnu") from None
+    if body.engine not in ENGINES:
+        # Moteur indisponible sur ce poste (ex. « unlimited » sans NVIDIA) → 400
+        raise HTTPException(
+            400,
+            f"Moteur OCR '{body.engine}' indisponible. Installés : {sorted(ENGINES)}",
+        )
 
-    suffix = Path(meta["filename"]).suffix or ".png"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    job_id = f"job_{uuid.uuid4().hex[:12]}"
+    _prune_jobs()
+    _jobs[job_id] = {
+        "job_id": job_id,
+        "document_id": document_id,
+        "filename": meta["filename"],
+        "status": "processing",
+        "step": "démarrage",
+        "vsm_id": None,
+        "result": None,
+        "error": None,
+        "created": time.time(),
+        "updated": time.time(),
+    }
+    thread = threading.Thread(
+        target=_run_process_job,
+        args=(job_id, document_id, body, sess),
+        daemon=True,
+    )
+    thread.start()
+    _log.info("traitement lancé job=%s document=%s", job_id, document_id)
+    return {"job_id": job_id, "status": "processing"}
+
+
+@app.get("/documents/process/{job_id}")
+def process_status(job_id: str, sess: dict = Depends(current_session)):
+    """État d'un traitement : progression puis résultat (ou erreur)."""
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Tâche inconnue")
+    out = {k: v for k, v in job.items() if k != "updated"}
+    if job["status"] == "done":
+        # résultat final fusionné (vsm_id, rapport, nb PII) — l'UI rafraîchit
+        out["result"] = job["result"]
+    return out
+
+
+def _prune_jobs() -> None:
+    """Élimine les tâches terminées de plus d'une heure (mémoire bornée)."""
+    now = time.time()
+    for jid in [j for j, jb in _jobs.items() if jb["status"] in ("done", "error")]:
+        if now - _jobs[jid]["updated"] > _JOB_TTL:
+            _jobs.pop(jid, None)
+
+
+def _run_process_job(
+    job_id: str, document_id: str, body: ProcessIn, sess: dict
+) -> None:
+    """Exécution du pipeline complète, dans un thread dédié.
+
+    La clé de session est « touchée » avant chaque opération chiffrée pour
+    éviter son expiration (timeout d'inactivité) pendant les traitements
+    longs ; le résultat est stocké normalement (visible immédiatement)."""
+    store: EncryptedStore = sess["store"]
+    job = _jobs[job_id]
+
+    def step(name: str) -> None:
+        job["step"] = name
+        job["updated"] = time.time()
+
     try:
-        ocr_json = ocr_pipeline(
-            tmp_path,
-            engine=body.engine,
-            anonymize_mode=body.anonymize_mode,
-            dossier_id=document_id,
-        )
-    except ValueError as exc:
-        # Moteur inconnu ou indisponible sur ce poste (ex. « unlimited »
-        # sans carte NVIDIA) → 400 explicite, jamais 500.
-        _log.warning(
-            "moteur OCR indisponible document=%s moteur=%s", document_id, body.engine
-        )
-        raise HTTPException(400, str(exc)) from None
-    finally:
-        os.unlink(tmp_path)
+        content = store.load_document(document_id)
+        meta = next(d for d in store.list_documents() if d["id"] == document_id)
+        suffix = Path(meta["filename"]).suffix or ".png"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        try:
+            step("OCR (lecture du document)")
+            ocr_json = ocr_pipeline(
+                tmp_path,
+                engine=body.engine,
+                anonymize_mode=body.anonymize_mode,
+                dossier_id=document_id,
+            )
+        finally:
+            os.unlink(tmp_path)
 
-    mapping = ocr_json.pop("_pii_mapping", None)
-    if mapping:
+        mapping = ocr_json.pop("_pii_mapping", None)
         passphrase = os.environ.get("VSM_VAULT_PASSPHRASE")
-        if passphrase:
+        if mapping and passphrase:
             MappingVault(APP_DIR / "vault.bin", passphrase).store_mapping(
                 document_id, mapping
             )
-        # sans passphrase de coffre, le mapping est volontairement perdu (≈ strict)
 
-    nlp_json = nlp_pipeline(ocr_json, nlp_engine=body.nlp_engine)
-    from src.vsm_generation.vsm_builder import build_vsm
+        step("extraction et assemblage du VSM")
+        nlp_json = nlp_pipeline(ocr_json, nlp_engine=body.nlp_engine)
+        from src.vsm_generation.vsm_builder import build_vsm
 
-    vsm = build_vsm(nlp_json)
-    vsm_id = f"vsm_{uuid.uuid4().hex[:12]}"
-    vsm["document_id"] = document_id
-    store.store_ocr_result(document_id, ocr_json)
-    store.store_nlp_result(document_id, nlp_json)
-    store.store_vsm(vsm_id, document_id, vsm)
-    for entry in ocr_json.get("audit_entries", []):
-        store.append_audit(sess["user"]["username"], "pii_detected", entry)
-    store.append_audit(
-        sess["user"]["username"],
-        "document_processed",
-        {
-            "document_id": document_id,
+        vsm = build_vsm(nlp_json)
+        vsm_id = f"vsm_{uuid.uuid4().hex[:12]}"
+        vsm["document_id"] = document_id
+
+        # rafraîchit la clé avant les écritures chiffrées (jobs > 15 min)
+        sess["key"].touch()
+        store.store_ocr_result(document_id, ocr_json)
+        store.store_nlp_result(document_id, nlp_json)
+        store.store_vsm(vsm_id, document_id, vsm)
+        for entry in ocr_json.get("audit_entries", []):
+            store.append_audit(sess["user"]["username"], "pii_detected", entry)
+        store.append_audit(
+            sess["user"]["username"],
+            "document_processed",
+            {
+                "document_id": document_id,
+                "vsm_id": vsm_id,
+                "engine": body.engine,
+                "nlp_engine": body.nlp_engine,
+                "pii_count": ocr_json["pii_detected_count"],
+            },
+        )
+
+        job["vsm_id"] = vsm_id
+        job["result"] = {
             "vsm_id": vsm_id,
-            "engine": body.engine,
-            "nlp_engine": body.nlp_engine,
-            "pii_count": ocr_json["pii_detected_count"],
-        },
-    )
-    _log.info(
-        "document traité id=%s vsm=%s ocr=%s nlp=%s pii=%d",
-        document_id,
-        vsm_id,
-        body.engine,
-        body.nlp_engine,
-        ocr_json["pii_detected_count"],
-    )
-    return {
-        "vsm_id": vsm_id,
-        "vsm": vsm,
-        "processing_report": ocr_json["processing_report"],
-        "pii_detected_count": ocr_json["pii_detected_count"],
-    }
+            "vsm": vsm,
+            "processing_report": ocr_json["processing_report"],
+            "pii_detected_count": ocr_json["pii_detected_count"],
+        }
+        job["status"] = "done"
+        step("terminé")
+        _log.info(
+            "document traité id=%s vsm=%s ocr=%s nlp=%s pii=%d",
+            document_id,
+            vsm_id,
+            body.engine,
+            body.nlp_engine,
+            ocr_json["pii_detected_count"],
+        )
+    except Exception as exc:  # noqa: BLE001 - l'erreur est rapportée à l'UI
+        job["status"] = "error"
+        job["error"] = str(exc)
+        job["updated"] = time.time()
+        _log.warning(
+            "traitement en échec job=%s document=%s : %s", job_id, document_id, exc
+        )
 
 
 @app.get("/documents")

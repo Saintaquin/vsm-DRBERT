@@ -54,6 +54,18 @@ export interface ProcessResult {
   processing_report: { pages_total: number; pages_ok: number; duration_sec: number; engine: string; anomalies: string[] };
 }
 
+/** État d'un traitement asynchrone (voir startProcess / processStatus). */
+export interface ProcessJob {
+  job_id: string;
+  document_id: string;
+  filename: string;
+  status: "processing" | "done" | "error";
+  step?: string;
+  vsm_id?: string | null;
+  error?: string | null;
+  result?: ProcessResult | null;
+}
+
 // ----------------------------------------------------------------- endpoints
 export interface Health {
   status: string;
@@ -89,8 +101,15 @@ export const api = {
     fd.append("file", file);
     return request<{ document_id: string; sha256: string }>("/documents/upload", { method: "POST", body: fd });
   },
-  process: (id: string, engine: string, anonymize_mode: string, nlp_engine = "rules") =>
-    request<ProcessResult>(`/documents/${id}/process`, { method: "POST", body: JSON.stringify({ engine, anonymize_mode, nlp_engine }) }),
+  /** Lance le traitement en arrière-plan (réponse immédiate avec job_id). */
+  startProcess: (id: string, engine: string, anonymize_mode: string, nlp_engine = "rules") =>
+    request<{ job_id: string; status: string }>(`/documents/${id}/process`, {
+      method: "POST",
+      body: JSON.stringify({ engine, anonymize_mode, nlp_engine }),
+    }),
+  /** État du traitement asynchrone : progression puis résultat complet. */
+  processStatus: (jobId: string) =>
+    request<ProcessJob>(`/documents/process/${jobId}`),
   listDocuments: () => request<DocMeta[]>("/documents"),
   getOcr: (id: string) => request<OcrResult>(`/documents/${id}/ocr`),
   forget: (dossierId: string) =>

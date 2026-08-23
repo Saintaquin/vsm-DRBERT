@@ -39,6 +39,24 @@ def _login(client):
     return {"X-CSRF-Token": r.json()["csrf"]}
 
 
+def _process_and_wait(client, headers, doc_id, **body):
+    """Lance un traitement asynchrone et attend sa fin (avec délai max)."""
+    import time
+
+    r = client.post(f"/documents/{doc_id}/process", headers=headers, json=body)
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        job = client.get(f"/documents/process/{job_id}", headers=headers).json()
+        if job["status"] == "done":
+            return job["result"]
+        if job["status"] == "error":
+            raise AssertionError(f"traitement en échec : {job['error']}")
+        time.sleep(0.5)
+    raise AssertionError("délai dépassé pour le traitement asynchrone")
+
+
 def test_requires_auth(client):
     assert client.get("/documents").status_code == 401
 
@@ -78,13 +96,13 @@ def test_full_flow(client, tmp_path):
     )
     assert up.status_code == 200
     doc_id = up.json()["document_id"]
-    pr = client.post(
-        f"/documents/{doc_id}/process",
-        headers=headers,
-        json={"engine": "tesseract", "anonymize_mode": "pseudo"},
+    body = _process_and_wait(
+        client,
+        headers,
+        doc_id,
+        engine="tesseract",
+        anonymize_mode="pseudo",
     )
-    assert pr.status_code == 200
-    body = pr.json()
     assert body["pii_detected_count"] >= 3
     vsm_id = body["vsm_id"]
     val = client.post(
@@ -95,6 +113,36 @@ def test_full_flow(client, tmp_path):
     assert audit.json()["chain_valid"] is True
     dele = client.delete(f"/documents/{doc_id}", headers=headers)
     assert dele.json()["deleted_documents"] == 1
+
+
+def test_process_async_flow(client, tmp_path):
+    # Le POST /process répond immédiatement (job_id) ; l'état évolue
+    # processing → done ; le VSM est visible dès la fin (sans reconnexion).
+    headers = _login(client)
+    from PIL import Image
+
+    p = tmp_path / "mini.png"
+    Image.new("L", (60, 60), 255).save(p)
+    up = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("mini.png", p.read_bytes(), "image/png")},
+    )
+    doc_id = up.json()["document_id"]
+    r = client.post(
+        f"/documents/{doc_id}/process",
+        headers=headers,
+        json={"engine": "tesseract", "anonymize_mode": "pseudo"},
+    )
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    assert r.json()["status"] == "processing"
+    result = _process_and_wait(
+        client, headers, doc_id, engine="tesseract", anonymize_mode="pseudo"
+    )
+    # visible dans la liste SANS nouvelle session
+    vsms = client.get("/vsm", headers=headers).json()
+    assert any(v["id"] == result["vsm_id"] for v in vsms)
 
 
 def test_export_pdf(client, tmp_path):
@@ -111,12 +159,14 @@ def test_export_pdf(client, tmp_path):
         files={"file": ("cas.png", synth.read_bytes(), "image/png")},
     )
     doc_id = up.json()["document_id"]
-    pr = client.post(
-        f"/documents/{doc_id}/process",
-        headers=headers,
-        json={"engine": "tesseract", "anonymize_mode": "pseudo"},
+    body = _process_and_wait(
+        client,
+        headers,
+        doc_id,
+        engine="tesseract",
+        anonymize_mode="pseudo",
     )
-    vsm_id = pr.json()["vsm_id"]
+    vsm_id = body["vsm_id"]
     r = client.get(f"/vsm/{vsm_id}/export?fmt=pdf", headers=headers)
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/pdf")

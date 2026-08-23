@@ -162,6 +162,25 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
 - **Tests** : 102 (+6 : écriture/rotation, idempotence, absence de handler
   réseau, redaction des PII, application à l'écrit).
 
+### Traitement asynchrone des documents (correction « temps infini »)
+
+- **Problème** : le traitement (OCR) s'exécutait dans la requête HTTP → sur
+  les gros PDF, attente sans progression ; au-delà de ~15 min, la session
+  expirait pendant le traitement → le rafraîchissement échouait (401) et le
+  VSM n'apparaissait qu'après reconnexion.
+- **Correction** : `POST /documents/{id}/process` répond **immédiatement**
+  (`job_id`, statut 202) ; le pipeline s'exécute dans un **thread d'arrière-
+  plan** ; `GET /documents/process/{job_id}` expose la **progression** puis le
+  résultat (ou l'erreur). Chaque interrogation « touche » la session et la
+  clé de chiffrement → **aucune expiration pendant le traitement** ; la clé
+  est aussi rafraîchie avant les écritures chiffrées du job.
+- Frontend : l'UI interroge l'état toutes les 2 s (avec étape affichée), puis
+  rafraîchit la liste — **le VSM apparaît sans reconnexion** ; si l'onglet est
+  fermé, le job se termine en arrière-plan et le VSM est présent au
+  prochain accès.
+- **Tests** : 103 (+1 : flux asynchrone processing → done, VSM visible sans
+  nouvelle session).
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

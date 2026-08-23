@@ -54,9 +54,20 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
     announce(`Envoi du document ${file.name}`);
     try {
       const { document_id } = await api.upload(file);
-      setBusy("Traitement en cours (OCR → anonymisation → extraction → VSM)…");
+      const { job_id } = await api.startProcess(document_id, ocrEngine, anonymizeMode, nlpEngine);
       announce("Traitement du document en cours");
-      const result = await api.process(document_id, ocrEngine, anonymizeMode, nlpEngine);
+      // Interrogation de l'état (chaque appel maintient la session vivante) :
+      // le traitement peut durer plusieurs minutes sur les gros PDF.
+      let job = await api.processStatus(job_id);
+      while (job.status === "processing") {
+        setBusy(`Traitement en cours — ${job.step ?? "analyse"}…`);
+        await new Promise((r) => setTimeout(r, 2000));
+        job = await api.processStatus(job_id);
+      }
+      if (job.status === "error") {
+        throw new ApiError(500, job.error ?? "Erreur pendant le traitement");
+      }
+      const result = job.result!;
       announce(`Document traité : ${result.processing_report.pages_ok} pages, ${result.pii_detected_count} informations identifiantes masquées`);
       setLastReport(result);
       await refresh();
