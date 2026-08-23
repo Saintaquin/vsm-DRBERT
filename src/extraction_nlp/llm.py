@@ -240,6 +240,11 @@ def main() -> int:
     """python -m src.extraction_nlp.llm [--model KEY] [--dest CHEMIN] [--force]"""
     import argparse
 
+    # Console Windows (cp1252) : forcer UTF-8 pour l'affichage (→, …)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     ap = argparse.ArgumentParser(description="Télécharge le modèle LLM local VSM-OCR")
     ap.add_argument(
         "--model",
