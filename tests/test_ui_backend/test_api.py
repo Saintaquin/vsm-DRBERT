@@ -266,12 +266,15 @@ def test_health_lists_available_engines(client):
     assert "tesseract" in engines  # moteur CPU de référence toujours présent
 
 
-def test_health_reports_llm_availability(client):
-    # LLM par défaut : /health expose sa disponibilité (False en test, sans
-    # modèle téléchargé — le repli règles prend le relais).
-    h = client.get("/health").json()
-    assert "llm_available" in h
-    assert h["llm_available"] is False
+def test_health_reports_llm_availability(client, monkeypatch):
+    # LLM par défaut : /health expose sa disponibilité réelle (déterministe ici,
+    # indépendant du modèle présent ou non sur la machine).
+    import src.extraction_nlp.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "model_available", lambda: False)
+    assert client.get("/health").json()["llm_available"] is False
+    monkeypatch.setattr(llm_mod, "model_available", lambda: True)
+    assert client.get("/health").json()["llm_available"] is True
 
 
 def test_process_default_nlp_engine_is_llm_with_fallback(client, tmp_path):
