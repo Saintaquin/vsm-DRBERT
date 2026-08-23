@@ -176,3 +176,33 @@ def test_extract_llm_skipped_when_infeasible(monkeypatch):
     ents = ee.extract_entities("ANTECEDENTS : Diabete de type 2.", engine="llm")
     assert called["llm"] is False
     assert any(e.section == "antecedents" for e in ents)
+
+
+def test_llm_empty_result_falls_back_to_rules(monkeypatch):
+    # Hybride : si le LLM renvoie une sortie VIDE (JSON tout « [] » sur un
+    # petit modèle), les règles prennent le relais au lieu d'un VSM vide.
+    from src.extraction_nlp import entity_extractor as ee
+
+    monkeypatch.setattr(llm_mod, "llm_feasible", lambda: (True, ""))
+    monkeypatch.setattr(ee, "extract_entities_llm", lambda text: [])
+    ents = ee.extract_entities(
+        "ANTECEDENTS : Diabete de type 2.\nALLERGIES : Penicilline.", engine="llm"
+    )
+    assert {e.section for e in ents} >= {"antecedents", "allergies"}
+
+
+def test_llm_non_empty_result_is_kept(monkeypatch):
+    # Si le LLM trouve du contenu, il est conservé tel quel (pas de règles).
+    from src.extraction_nlp import entity_extractor as ee
+    from src.extraction_nlp.entity_extractor import ExtractedEntity
+
+    monkeypatch.setattr(llm_mod, "llm_feasible", lambda: (True, ""))
+    monkeypatch.setattr(
+        ee,
+        "extract_entities_llm",
+        lambda text: [
+            ExtractedEntity("Malaise", "points_vigilance", 0.65, "Malaise", 0, 6)
+        ],
+    )
+    ents = ee.extract_entities("Malaise au réveil.", engine="llm")
+    assert len(ents) == 1 and ents[0].section == "points_vigilance"

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 import uuid
 from pathlib import Path
@@ -35,13 +36,44 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _load_pages(input_path: Path) -> list[Image.Image]:
+# Taille des LOTS de pages PDF traités en mémoire (correction « OCR vide » sur
+# les gros PDF) : convert_from_path(sans bornes) charge TOUTES les pages en
+# RAM → OOM/swap sur les documents volumineux → pages vides. Le découpage par
+# lots (défaut 20 pages, configurable VSM_OCR_PDF_BATCH) borne la mémoire.
+_OCR_PDF_BATCH = int(os.environ.get("VSM_OCR_PDF_BATCH", "20"))
+
+
+def _load_pages(input_path: Path):
+    """Générateur (numéro de page réel, image). Pour les PDF : par LOTS de
+    pages — la conversion complète d'un gros PDF en une fois provoque une
+    saturation mémoire (résultat OCR vide). Pour une image : une seule page."""
     suffix = input_path.suffix.lower()
     if suffix == ".pdf":
         from pdf2image import convert_from_path
+        from pypdf import PdfReader
 
-        return convert_from_path(str(input_path), dpi=200)
-    return [Image.open(input_path)]
+        try:
+            total = len(PdfReader(str(input_path)).pages)
+        except Exception as exc:  # document entier illisible
+            raise RuntimeError(f"PDF illisible : {exc}") from exc
+
+        def _gen():
+            for start in range(0, total, _OCR_PDF_BATCH):
+                end = min(start + _OCR_PDF_BATCH, total)
+                pages = convert_from_path(
+                    str(input_path),
+                    dpi=200,
+                    first_page=start + 1,
+                    last_page=end,
+                )
+                yield from enumerate(pages, start=start + 1)
+
+        return _gen()
+
+    def _one():
+        yield 1, Image.open(input_path)
+
+    return _one()
 
 
 def run_pipeline(
@@ -86,7 +118,7 @@ def run_pipeline(
     except Exception as exc:  # document entier illisible
         raise RuntimeError(f"Document illisible : {exc}") from exc
 
-    for idx, page_img in enumerate(pages, start=1):
+    for idx, page_img in pages:
         try:
             if preprocess:
                 pre = preprocess_image(page_img)

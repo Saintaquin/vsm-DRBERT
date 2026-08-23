@@ -54,3 +54,25 @@ def test_invalid_mode_rejected(tmp_path):
     Image.new("L", (50, 50), 255).save(p)
     with pytest.raises(ValueError):
         run_pipeline(p, anonymize_mode="none")
+
+
+def test_pdf_processed_in_page_batches(tmp_path, monkeypatch):
+    # Correction « OCR vide sur gros PDF » : les pages sont converties et
+    # traitées par LOTS (mémoire bornée), tous les numéros de page présents.
+    import pypdf
+    from src.ingestion_ocr import pipeline as pl
+
+    pdf = tmp_path / "doc5.pdf"
+    writer = pypdf.PdfWriter()
+    for _ in range(5):
+        writer.add_blank_page(width=300, height=400)
+    with open(pdf, "wb") as f:
+        writer.write(f)
+
+    monkeypatch.setattr(pl, "_OCR_PDF_BATCH", 2)  # lots de 2 pages
+    out = run_pipeline(pdf, engine="tesseract", anonymize_mode="strict")
+    rep = out["processing_report"]
+    assert rep["pages_total"] == 5
+    assert rep["pages_ok"] == 5
+    assert [p["page"] for p in out["pages"]] == [1, 2, 3, 4, 5]
+    assert out["anonymization_applied"] is True

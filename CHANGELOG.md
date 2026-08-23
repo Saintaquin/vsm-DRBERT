@@ -241,6 +241,23 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
   exacte (modèle absent ou RAM insuffisante).
 - **Tests** : 110 (+2 : garde-fou RAM, LLM sauté quand infaisable).
 
+### Correction « VSM vide » : découpage PDF par lots + hybride LLM→règles
+
+- **Problème (captures du dossier bug)** : l'identité était extraite mais
+  toutes les rubriques cliniques restaient vides. Causes : (1) sur les gros
+  PDF, `convert_from_path` chargeait TOUTES les pages en mémoire → OOM/swap →
+  pages vides ; (2) un LLM dégradé (petit modèle quantizé sous pression
+  mémoire) pouvait renvoyer un JSON tout « [] ».
+- **Correction** :
+  - `src/ingestion_ocr/pipeline.py` : conversion/OCR des PDF **par LOTS de
+    pages** (défaut 20, configurable `VSM_OCR_PDF_BATCH`) — mémoire bornée,
+    numéros de page réels conservés ;
+  - `entity_extractor.py` : **hybride** — si le LLM renvoie une sortie vide,
+    les règles prennent le relais (elles peuvent trouver du contenu omis) ;
+    si le LLM trouve du contenu, il est conservé.
+- **Tests** : 113 (+3 : découpage en lots avec numéros de page, hybride
+  vide→règles, LLM non vide conservé).
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation
