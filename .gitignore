@@ -19,3 +19,5 @@ frontend/tsconfig.tsbuildinfo
 # Documents de communication (règlement du concours, données fournies) :
 # CONSERVÉS LOCALEMENT UNIQUEMENT — jamais commités ni poussés sur GitHub.
 reglements/
+# Captures d'écran de diagnostic (bug) — locales uniquement.
+bug/
