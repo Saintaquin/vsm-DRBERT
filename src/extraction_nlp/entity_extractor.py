@@ -15,8 +15,11 @@ Chaque entité porte : valeur, confiance, source (passage + offsets), moteur.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import asdict, dataclass
+
+_log = logging.getLogger("vsm")
 
 NLP_ENGINE_RULES = "rules-fr-v1"
 NLP_ENGINE_LLM = "llama-3.1-8b-q4-local"
@@ -631,9 +634,17 @@ def extract_entities(text: str, engine: str = "rules") -> list[ExtractedEntity]:
                 ents, timed_out = _extract_llm_with_timeout(text, timeout=None)
                 if timed_out:
                     _LLM_ABORTED = True  # ne plus retenter cette session
+                    _log.warning(
+                        "LLM dépassé le délai d'inférence (machine lente) — repli règles"
+                    )
                 elif ents:
                     return ents
+                else:
+                    _log.info("LLM a renvoyé une sortie vide — repli règles (hybride)")
                 # sortie vide → hybride : on tente les règles ci-dessous
             except Exception:
+                _log.warning("Erreur d'inférence LLM — repli règles")
                 pass  # repli documenté sur les règles (erreur d'inférence)
+        elif not _LLM_ABORTED:
+            _log.info("LLM non tenté (modèle absent) — moteur de règles")
     return extract_entities_free_text_fallback(text, extract_entities_rules(text))

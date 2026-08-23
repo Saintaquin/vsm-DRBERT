@@ -393,14 +393,30 @@ def _run_process_job(
         }
         job["status"] = "done"
         step("terminé")
-        _log.info(
-            "document traité id=%s vsm=%s ocr=%s nlp=%s pii=%d",
-            document_id,
-            vsm_id,
-            body.engine,
-            body.nlp_engine,
-            ocr_json["pii_detected_count"],
-        )
+        # Moteur NLP RÉELLEMENT utilisé (repli possible) + durée totale
+        moteur_effectif = vsm.get("provenance", {}).get("moteur_nlp", body.nlp_engine)
+        if moteur_effectif != body.nlp_engine:
+            _log.info(
+                "document traité id=%s vsm=%s ocr=%s nlp=%s (repli sur %s) "
+                "pii=%d durée=%.1fs",
+                document_id,
+                vsm_id,
+                body.engine,
+                body.nlp_engine,
+                moteur_effectif,
+                ocr_json["pii_detected_count"],
+                time.time() - job["created"],
+            )
+        else:
+            _log.info(
+                "document traité id=%s vsm=%s ocr=%s nlp=%s pii=%d durée=%.1fs",
+                document_id,
+                vsm_id,
+                body.engine,
+                moteur_effectif,
+                ocr_json["pii_detected_count"],
+                time.time() - job["created"],
+            )
     except Exception as exc:  # noqa: BLE001 - l'erreur est rapportée à l'UI
         job["status"] = "error"
         job["error"] = str(exc)
