@@ -193,6 +193,14 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
 - **Tests** : 104 (+1 : cohérence des ids + passage retrouvable via
   `/documents/{id}/ocr`).
 
+### Visualiseur : défilement automatique vers le passage source
+
+- `DocumentViewer.tsx` : au chargement, le premier `<mark>` est amené **au
+  centre de la vue** (`scrollIntoView`, douceur adaptée à
+  `prefers-reduced-motion`) — plus besoin de chercher le surlignage dans le
+  bloc ; le passage est aussi entouré d'un liseré ambre (`outline`) pour le
+  rendre immédiatement visible.
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

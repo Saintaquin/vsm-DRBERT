@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, OcrResult, api } from "../api";
 import { Alerte, Card, CardBody, CardHeader, Spinner } from "../components/ui";
 
@@ -9,6 +9,7 @@ import { Alerte, Card, CardBody, CardHeader, Spinner } from "../components/ui";
 export function DocumentViewer({ documentId, highlight }: { documentId: string; highlight?: string }) {
   const [ocr, setOcr] = useState<OcrResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const preRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
     setOcr(null);
@@ -16,6 +17,20 @@ export function DocumentViewer({ documentId, highlight }: { documentId: string; 
       .then(setOcr)
       .catch((e) => setError(e instanceof ApiError ? e.message : "Chargement impossible"));
   }, [documentId]);
+
+  // Au chargement, amener le premier passage surligné au centre de la vue
+  // (inutile de chercher le surlignage dans le bloc — correction UX).
+  useEffect(() => {
+    if (!ocr || !highlight) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const t = window.setTimeout(() => {
+      preRef.current?.querySelector("mark")?.scrollIntoView({
+        block: "center",
+        behavior: reduce ? "auto" : "smooth",
+      });
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [ocr, highlight]);
 
   const fragments = useMemo(() => {
     if (!ocr) return [];
@@ -49,11 +64,11 @@ export function DocumentViewer({ documentId, highlight }: { documentId: string; 
                 Passage source surligné : <mark className="rounded bg-ambre-fond px-1 text-ambre">{highlight.slice(0, 80)}{highlight.length > 80 ? "…" : ""}</mark>
               </p>
             )}
-            <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap rounded-md border border-trait bg-papier p-4 font-mono text-sm leading-6 text-encre"
+            <pre ref={preRef} className="max-h-[70vh] overflow-auto whitespace-pre-wrap rounded-md border border-trait bg-papier p-4 font-mono text-sm leading-6 text-encre"
               aria-label="Texte OCR du document">
               {fragments.map((f, i) =>
                 f.mark
-                  ? <mark key={i} className="rounded bg-ambre-fond px-0.5 font-semibold text-ambre">{f.text}</mark>
+                  ? <mark key={i} className="rounded bg-ambre-fond px-0.5 font-semibold text-ambre outline outline-2 outline-offset-1 outline-ambre-bord">{f.text}</mark>
                   : <span key={i}>{f.text}</span>
               )}
             </pre>
