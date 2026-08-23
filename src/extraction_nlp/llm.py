@@ -20,13 +20,38 @@ from pathlib import Path
 # Référence : ~/.cache/vsm-ocr/ (jamais committé, cf. .gitignore)
 CACHE_DIR = Path(os.environ.get("VSM_LLM_CACHE", Path.home() / ".cache" / "vsm-ocr"))
 
-# Modèles candidats recommandés (audit ADR-0004) : licence, taille GGUF Q4_K_M
-# approximative, RAM nécessaire, qualité français, note globale /5.
-# Le premier élément est le modèle par défaut recommandé.
+# Modèles candidats (audit ADR-0004 / ADR-0009) : licence, taille GGUF Q4_K_M,
+# RAM nécessaire, qualité français, note /5.
+# Le PREMIER élément est le modèle UNIVERSEL par défaut (toutes machines,
+# y compris < 8 Go sans GPU) : Qwen 2.5 3B Q4 (Apache 2.0, ~2 Go, CPU).
 RECOMMENDED_MODELS = [
     {
+        "key": "qwen2.5-3b",
+        "nom": "Qwen 2.5 3B Instruct — DÉFAUT UNIVERSEL",
+        "hf_repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+        "hf_file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+        "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+        "taille_gb": 2.0,
+        "ram_min_gb": 4,
+        "licence": "Apache 2.0",
+        "francais": "Bon (multilingue, FR correct) — CPU, sans GPU",
+        "note": 4,
+    },
+    {
+        "key": "qwen2.5-1.5b",
+        "nom": "Qwen 2.5 1.5B Instruct (ultra-léger, < 4 Go)",
+        "hf_repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        "hf_file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "taille_gb": 1.0,
+        "ram_min_gb": 3,
+        "licence": "Apache 2.0",
+        "francais": "Correct (multilingue) — CPU, machines très légères",
+        "note": 3,
+    },
+    {
         "key": "mistral-nemo-12b",
-        "nom": "Mistral NeMo 12B Instruct",
+        "nom": "Mistral NeMo 12B Instruct (haute qualité, 16 Go)",
         "hf_repo": "TheBloke/Mistral-Nemo-Instruct-12B-GGUF",
         "hf_file": "mistral-nemo-instruct-12b.Q4_K_M.gguf",
         "url": "https://huggingface.co/TheBloke/Mistral-Nemo-Instruct-12B-GGUF/resolve/main/mistral-nemo-instruct-12b.Q4_K_M.gguf",
@@ -38,12 +63,12 @@ RECOMMENDED_MODELS = [
     },
     {
         "key": "qwen2.5-7b",
-        "nom": "Qwen 2.5 7B Instruct",
+        "nom": "Qwen 2.5 7B Instruct (9-14 Go)",
         "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
         "hf_file": "qwen2.5-7b-instruct-q4_k_m.gguf",
         "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf",
         "taille_gb": 4.7,
-        "ram_min_gb": 8,
+        "ram_min_gb": 9,
         "licence": "Apache 2.0",
         "francais": "Bon (multilingue fort)",
         "note": 4,
@@ -55,26 +80,14 @@ RECOMMENDED_MODELS = [
         "hf_file": "mistral-7b-instruct-v0.3.Q4_K_M.gguf",
         "url": "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/mistral-7b-instruct-v0.3.Q4_K_M.gguf",
         "taille_gb": 4.1,
-        "ram_min_gb": 8,
+        "ram_min_gb": 9,
         "licence": "Apache 2.0",
         "francais": "Très bon (française)",
         "note": 4,
     },
     {
-        "key": "llama3.1-8b",
-        "nom": "Llama 3.1 8B Instruct (choix ADR-0001)",
-        "hf_repo": "TheBloke/Llama-3.1-8B-Instruct-GGUF",
-        "hf_file": "llama-3.1-8b-instruct.Q4_K_M.gguf",
-        "url": "https://huggingface.co/TheBloke/Llama-3.1-8B-Instruct-GGUF/resolve/main/llama-3.1-8b-instruct.Q4_K_M.gguf",
-        "taille_gb": 4.9,
-        "ram_min_gb": 12,
-        "licence": "Llama Community License (non exclusive, <700M MAU)",
-        "francais": "Bon",
-        "note": 3,
-    },
-    {
         "key": "llama3.2-3b",
-        "nom": "Llama 3.2 3B Instruct (ultra-léger)",
+        "nom": "Llama 3.2 3B Instruct (ultra-léger, licence Llama)",
         "hf_repo": "TheBloke/Llama-3.2-3B-Instruct-GGUF",
         "hf_file": "llama-3.2-3b-instruct.Q4_K_M.gguf",
         "url": "https://huggingface.co/TheBloke/Llama-3.2-3B-Instruct-GGUF/resolve/main/llama-3.2-3b-instruct.Q4_K_M.gguf",
@@ -85,15 +98,15 @@ RECOMMENDED_MODELS = [
         "note": 2,
     },
     {
-        "key": "qwen2.5-3b",
-        "nom": "Qwen 2.5 3B Instruct (léger, machines 4-8 Go)",
-        "hf_repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
-        "hf_file": "qwen2.5-3b-instruct-q4_k_m.gguf",
-        "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
-        "taille_gb": 2.0,
-        "ram_min_gb": 4,
-        "licence": "Apache 2.0",
-        "francais": "Correct (multilingue)",
+        "key": "llama3.1-8b",
+        "nom": "Llama 3.1 8B Instruct (licence Llama)",
+        "hf_repo": "TheBloke/Llama-3.1-8B-Instruct-GGUF",
+        "hf_file": "llama-3.1-8b-instruct.Q4_K_M.gguf",
+        "url": "https://huggingface.co/TheBloke/Llama-3.1-8B-Instruct-GGUF/resolve/main/llama-3.1-8b-instruct.Q4_K_M.gguf",
+        "taille_gb": 4.9,
+        "ram_min_gb": 12,
+        "licence": "Llama Community License (non exclusive, <700M MAU)",
+        "francais": "Bon",
         "note": 3,
     },
 ]
@@ -134,13 +147,16 @@ def suggest_model() -> str:
     """Modèle conseillé selon la RAM détectée (voir --list).
 
     Règles prudentes : modèle + contexte + OS + application doivent tenir en
-    mémoire sans swap (un 7B Q4 ≈ 5 Go à l'inférence)."""
+    mémoire sans swap (un 3B Q4 ≈ 2 Go à l'inférence). Le modèle universel
+    (Qwen 2.5 3B) convient à partir de 4 Go, sans GPU."""
     ram = detect_ram_gb()
     if ram >= 14:
         return "mistral-nemo-12b"
     if ram >= 9:
         return "qwen2.5-7b"
-    return "qwen2.5-3b"
+    if ram >= 4:
+        return "qwen2.5-3b"
+    return "qwen2.5-1.5b"
 
 
 def default_model_path() -> Path:

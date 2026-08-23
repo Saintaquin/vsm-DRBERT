@@ -100,26 +100,27 @@ src-tauri/            wrapper desktop (bundles .msi / .AppImage / .deb)
 schema/vsm_schema.json  contrat d'interface entre les modules (v1.1.0)
 ```
 
-Le moteur NLP par défaut est **à base de règles** (aucun téléchargement, aucune
-dépendance lourde). Un moteur **LLM local optionnel** peut être activé pour
-gagner sur les documents non rubriqués — **100 % offline** (RGPD, art. 9) :
-modèle Apache 2.0 téléchargé une fois à l'installation, jamais pendant le
-traitement, inférence sur le texte pseudonymisé.
+Le moteur NLP est **un LLM local par défaut sur toutes les machines**
+(**Qwen 2.5 3B, ~2 Go, Apache 2.0, CPU — machines ≥ 4 Go, sans GPU**) — 100 %
+offline (RGPD, art. 9) : modèle téléchargé une fois à l'installation, jamais
+pendant le traitement, inférence sur le texte pseudonymisé. Le moteur **règles
+reste le repli automatique** si le modèle est absent ou échoue (l'application
+fonctionne toujours).
 
 ```bash
-pip install llama-cpp-python                  # moteur d'inférence (optionnel)
-python -m src.extraction_nlp.llm --list       # modèles candidats (audit ADR-0004)
-python -m src.extraction_nlp.llm              # télécharge Mistral NeMo 12B Q4 (~7 Go, 16 Go RAM)
-# machine 8 Go : python -m src.extraction_nlp.llm --model qwen2.5-7b
+pip install llama-cpp-python                  # moteur d'inférence
+python -m src.extraction_nlp.llm              # télécharge Qwen 2.5 3B (~2 Go) — DÉFAUT universel
+# --list : voir les options (qwen2.5-1.5b < 4 Go, qwen2.5-7b 9-14 Go, mistral-nemo-12b 16 Go…)
+# --model qwen2.5-1.5b                        # machines très légères (< 4 Go)
 ```
 
-Puis dans l'UI : **Extraction → « LLM local »** (ou `"nlp_engine": "llm"` dans
-`POST /documents/{id}/process`). Voir `docs/ADR/0004-llm-local-choix-modele.md`.
+Sans téléchargement, l'UI avertit et le moteur de règles prend le relais.
+Voir `docs/ADR/0009-llm-par-defaut-universel.md` et `docs/ADR/0004-llm-local-choix-modele.md`.
 
 ## Tests, qualité, benchmark
 
 ```bash
-pytest tests/ -v                          # 86 tests (anonymisation, OCR, NLP, LLM, VSM, storage, API)
+pytest tests/ -v                          # 108 tests (anonymisation, OCR, NLP, LLM, VSM, storage, API)
 python -m src.ingestion_ocr.benchmark     # CER/WER → outputs/benchmark.csv + BENCHMARK_REPORT.md
 python -m examples.demo_nlp               # démo extraction NLP sur texte exemple
 ```

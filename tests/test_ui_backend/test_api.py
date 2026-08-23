@@ -266,6 +266,43 @@ def test_health_lists_available_engines(client):
     assert "tesseract" in engines  # moteur CPU de référence toujours présent
 
 
+def test_health_reports_llm_availability(client):
+    # LLM par défaut : /health expose sa disponibilité (False en test, sans
+    # modèle téléchargé — le repli règles prend le relais).
+    h = client.get("/health").json()
+    assert "llm_available" in h
+    assert h["llm_available"] is False
+
+
+def test_process_default_nlp_engine_is_llm_with_fallback(client, tmp_path):
+    # Sans nlp_engine explicite, le POST /process utilise « llm » par défaut ;
+    # sans modèle téléchargé, le repli règles produit quand même le VSM.
+    headers = _login(client)
+    synth = (
+        Path(__file__).resolve().parents[2] / "data" / "synthetic" / "cas_001_clean.png"
+    )
+    if not synth.exists():
+        pytest.skip("dataset non généré")
+    up = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("cas.png", synth.read_bytes(), "image/png")},
+    )
+    doc_id = up.json()["document_id"]
+    r = client.post(
+        f"/documents/{doc_id}/process",
+        headers=headers,
+        json={"engine": "tesseract", "anonymize_mode": "pseudo"},
+    )
+    assert r.status_code == 200
+    result = _process_and_wait(
+        client, headers, doc_id, engine="tesseract", anonymize_mode="pseudo"
+    )
+    assert result["vsm_id"]
+    vsm = client.get(f"/vsm/{result['vsm_id']}", headers=headers).json()
+    assert vsm["provenance"]["moteur_nlp"] == "rules-fr-v1"  # repli automatique
+
+
 def _seed_vsm(store, vsm_id, statut, codes, extra=None):
     """Crée un VSM de test dans le store (sans OCR — rapide)."""
     sections = {}

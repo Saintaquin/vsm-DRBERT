@@ -87,9 +87,10 @@ class BootstrapIn(LoginIn):
 class ProcessIn(BaseModel):
     engine: str = Field(default="tesseract", pattern="^[a-z0-9_]+$")
     anonymize_mode: str = Field(default="pseudo", pattern="^(pseudo|strict)$")
-    # Moteur NLP : « rules » (défaut, offline) ou « llm » (LLM local,
-    # téléchargé par l'admin — voir docs/ADR/0004). Strictement local.
-    nlp_engine: str = Field(default="rules", pattern="^(rules|llm)$")
+    # Moteur NLP : « llm » PAR DÉFAUT (toutes machines — modèle Qwen 2.5 3B
+    # universel, docs/ADR-0009) ; « rules » reste le repli automatique si le
+    # modèle est absent ou échoue. Strictement local (art. 9).
+    nlp_engine: str = Field(default="llm", pattern="^(rules|llm)$")
 
 
 class ValidateIn(BaseModel):
@@ -124,12 +125,17 @@ def current_session(
 # ----------------------------------------------------------------- auth
 @app.get("/health")
 def health():
+    from src.extraction_nlp.llm import model_available
+
     return {
         "status": "ok",
         "max_upload_mb": MAX_UPLOAD_MB,
         # Moteurs OCR réellement disponibles sur ce poste — « unlimited »
         # n'apparaît QUE si une carte NVIDIA est détectée (docs/ADR/0005).
         "available_engines": sorted(ENGINES),
+        # LLM local par défaut : disponible si le modèle (Qwen 2.5 3B) est
+        # téléchargé ; sinon repli automatique sur les règles (ADR-0009).
+        "llm_available": model_available(),
     }
 
 

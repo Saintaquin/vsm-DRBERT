@@ -39,7 +39,7 @@ def test_recommended_models_metadata():
     assert llm_mod.RECOMMENDED_MODELS
     for m in llm_mod.RECOMMENDED_MODELS:
         assert m["taille_gb"] > 0
-        assert m["ram_min_gb"] >= 4
+        assert m["ram_min_gb"] >= 3
         assert m["licence"]
         assert 1 <= m["note"] <= 5
         assert m["url"].startswith("https://huggingface.co/")
@@ -95,16 +95,51 @@ def test_suggest_model_by_ram(monkeypatch):
     monkeypatch.setattr(llm_mod, "detect_ram_gb", lambda: 10.0)
     assert llm_mod.suggest_model() == "qwen2.5-7b"
     monkeypatch.setattr(llm_mod, "detect_ram_gb", lambda: 8.0)
-    assert llm_mod.suggest_model() == "qwen2.5-3b"  # prudent sur 8 Go
+    assert llm_mod.suggest_model() == "qwen2.5-3b"  # universel, CPU, 4-8 Go
     monkeypatch.setattr(llm_mod, "detect_ram_gb", lambda: 4.0)
     assert llm_mod.suggest_model() == "qwen2.5-3b"
+    monkeypatch.setattr(llm_mod, "detect_ram_gb", lambda: 3.0)
+    assert llm_mod.suggest_model() == "qwen2.5-1.5b"  # ultra-léger < 4 Go
 
 
 def test_light_model_for_small_machines():
-    # Machine < 16 Go : une option Apache 2.0 ≤ 2 Go doit exister
-    light = [
-        m
-        for m in llm_mod.RECOMMENDED_MODELS
-        if m["licence"] == "Apache 2.0" and m["taille_gb"] <= 2.0
-    ]
-    assert light and light[0]["key"] == "qwen2.5-3b"
+    # Toutes machines : le modèle UNIVERSEL par défaut (1er du catalogue)
+    # est Apache 2.0, ≤ 2 Go, utilisable sans GPU.
+    default = llm_mod.RECOMMENDED_MODELS[0]
+    assert default["key"] == "qwen2.5-3b"
+    assert default["licence"] == "Apache 2.0"
+    assert default["taille_gb"] <= 2.0
+    # et une option ultra-légère Apache 2.0 existe (< 4 Go)
+    assert any(m["key"] == "qwen2.5-1.5b" for m in llm_mod.RECOMMENDED_MODELS)
+
+
+def test_prompt_system_is_structured():
+    # Système de prompt efficace : schéma JSON, anti-hallucination,
+    # normalisation, négations, few-shot, pseudonymes exclus.
+    from src.extraction_nlp.entity_extractor import build_llm_messages
+
+    msgs = build_llm_messages("ANTECEDENTS : Diabete de type 2.", max_chars=2000)
+    assert msgs[0]["role"] == "system" and msgs[1]["role"] == "user"
+    system = msgs[0]["content"]
+    user = msgs[1]["content"]
+    # schéma JSON strict présent
+    assert '"pathologies_actives"' in system
+    assert '"points_vigilance"' in system
+    # anti-hallucination + normalisation + négations + pseudonymes
+    assert "N'INVENTE RIEN" in system
+    assert "Diabète de type 2" in system  # exemple de normalisation
+    assert "aucune allergie" in system
+    assert "PATIENT_001" in system  # pseudonymes interdits dans valeur
+    # few-shot : un exemple de réponse est intégré
+    assert '"valeur": "Diabète de type 2 depuis 2010"' in system
+    # le texte utilisateur est tronqué (borne max_chars)
+    assert len(msgs[1]["content"]) < 2200
+
+
+def test_prompt_truncation():
+    from src.extraction_nlp.entity_extractor import build_llm_messages
+
+    long = "x" * 10_000
+    msgs = build_llm_messages(long, max_chars=500)
+    assert "x" * 500 in msgs[1]["content"]
+    assert "x" * 501 not in msgs[1]["content"]

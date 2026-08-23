@@ -71,6 +71,7 @@ export interface Health {
   status: string;
   max_upload_mb?: number;
   available_engines?: string[];
+  llm_available?: boolean;
 }
 
 export interface StatsEntry { code: string; libelle: string; count: number | null; masque: boolean; }
@@ -101,8 +102,9 @@ export const api = {
     fd.append("file", file);
     return request<{ document_id: string; sha256: string }>("/documents/upload", { method: "POST", body: fd });
   },
-  /** Lance le traitement en arrière-plan (réponse immédiate avec job_id). */
-  startProcess: (id: string, engine: string, anonymize_mode: string, nlp_engine = "rules") =>
+  /** Lance le traitement en arrière-plan (réponse immédiate avec job_id).
+   *  Moteur NLP par défaut : « llm » (LLM local universel, repli règles auto). */
+  startProcess: (id: string, engine: string, anonymize_mode: string, nlp_engine = "llm") =>
     request<{ job_id: string; status: string }>(`/documents/${id}/process`, {
       method: "POST",
       body: JSON.stringify({ engine, anonymize_mode, nlp_engine }),

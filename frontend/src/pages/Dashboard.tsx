@@ -15,18 +15,22 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [lastReport, setLastReport] = useState<ProcessResult | null>(null);
   const [anonymizeMode, setAnonymizeMode] = useState<"pseudo" | "strict">("pseudo");
-  const [nlpEngine, setNlpEngine] = useState<"rules" | "llm">("rules");
+  // LLM local PAR DÉFAUT (toutes machines) ; les règles servent de repli
+  // automatique côté backend si le modèle est absent (docs/ADR-0009).
+  const nlpEngine = "llm" as const;
+  const [llmAvailable, setLlmAvailable] = useState<boolean>(true);
   const [maxUploadMb, setMaxUploadMb] = useState<number>(50);
   const [ocrEngine, setOcrEngine] = useState<string>("tesseract");
   const [availableEngines, setAvailableEngines] = useState<string[]>(["tesseract"]);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Configuration publiée par le backend : limite d'upload et moteurs OCR
-  // réellement disponibles (« unlimited » n'apparaît que sur poste NVIDIA).
+  // Configuration publiée par le backend : limite d'upload, moteurs OCR
+  // (« unlimited » n'apparaît que sur poste NVIDIA) et disponibilité du LLM.
   useEffect(() => {
     api.health()
       .then((h) => {
         if (typeof h.max_upload_mb === "number") setMaxUploadMb(h.max_upload_mb);
+        if (typeof h.llm_available === "boolean") setLlmAvailable(h.llm_available);
         if (Array.isArray(h.available_engines) && h.available_engines.length) {
           setAvailableEngines(h.available_engines);
           setOcrEngine(h.available_engines.includes("tesseract") ? "tesseract" : h.available_engines[0]);
@@ -111,18 +115,12 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
               </label>
             ))}
           </fieldset>
-          <fieldset className="flex flex-wrap items-center gap-4">
-            <legend className="sr-only">Moteur d'extraction</legend>
-            <span className="text-sm font-medium text-encre">Extraction :</span>
-            {(["rules", "llm"] as const).map((m) => (
-              <label key={m} className="inline-flex cursor-pointer items-center gap-1.5 text-sm">
-                <input type="radio" name="nlp" value={m} checked={nlpEngine === m}
-                  onChange={() => setNlpEngine(m)}
-                  className="accent-sarcelle focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle" />
-                {m === "rules" ? "Règles (rapide, offline)" : "LLM local (plus précis — modèle requis)"}
-              </label>
-            ))}
-          </fieldset>
+          {!llmAvailable && (
+            <Alerte kind="info">
+              LLM local non téléchargé — l'extraction utilisera le moteur de règles en repli. Pour activer le LLM
+              (Qwen 2.5 3B, ~2 Go, toutes machines) : <code className="font-mono">python -m src.extraction_nlp.llm</code>
+            </Alerte>
+          )}
           <fieldset className="flex flex-wrap items-center gap-4">
             <legend className="sr-only">Moteur OCR</legend>
             <span className="text-sm font-medium text-encre">OCR :</span>

@@ -212,6 +212,22 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
   MIT) ; **LayoutXLM** documenté comme **piste P2** (fine-tuning FR médical
   futur) au dossier scientifique. Veille : `outputs/AUDIT_LLM_DOCMODELS.md`.
 
+### LLM local PAR DÉFAUT sur toutes les machines (ADR-0009)
+
+- **Audit petits LLM** (< 8 Go, sans GPU) : Qwen 2.5 3B/1.5B (Apache 2.0) vs
+  SmolLM2, Llama 3.2, Gemma 2, Phi-3.5 → **défaut universel : Qwen 2.5 3B
+  Q4_K_M (~2 Go, Apache 2.0, CPU, ≥ 4 Go)** ; repli **Qwen 2.5 1.5B** (< 4 Go).
+- **Système de prompt efficace** (`build_llm_messages`) : rôle, schéma JSON
+  strict (7 rubriques), **anti-hallucination** (« n'invente rien », rubrique
+  absente → []), normalisation (orthographe + dosage), négations, pseudonymes
+  exclus des valeurs, **few-shot** (exemple complet), troncature au contexte.
+- **Non optionnel** : `ProcessIn.nlp_engine` défaut **« llm »** ; l'UI n'affiche
+  plus le choix Règles/LLM ; `/health` expose `llm_available` (alerte si modèle
+  absent) ; le moteur **règles reste le repli automatique** (testé).
+- Conformité : art. 9 (offline, modèle à l'installation), annexe 1 (Apache 2.0),
+  art. 7 (extraction améliorée, XAI conservée).
+- **Tests** : 108 (+4 : prompt system, troncature, santé LLM, défaut + repli).
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

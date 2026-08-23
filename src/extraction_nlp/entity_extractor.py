@@ -435,25 +435,78 @@ def extract_entities_free_text_fallback(
 
 
 # ---------------------------------------------------------------------------
-# Adaptateur LLM local (optionnel — strictement offline, voir docs/ADR/0004)
+# Adaptateur LLM local (PAR DÉFAUT — docs/ADR/0004 & ADR-0009)
+# Système de prompt : rôle, schéma JSON strict, anti-hallucination,
+# normalisation, négations, few-shot. Le moteur règles reste le repli.
 # ---------------------------------------------------------------------------
-_LLM_SYSTEM = (
-    "Tu es un assistant médical français qui extrait des informations "
-    "structurées de comptes-rendus médicaux. Réponds UNIQUEMENT en JSON valide. "
-    "Les sections possibles sont : pathologies_actives, antecedents, allergies, "
-    "traitements_long_cours, facteurs_risque, vaccinations, points_vigilance. "
-    'Chaque élément est {"valeur": str, "passage": str} où « passage » est '
-    "le texte source exact (reproduit tel quel) et « valeur » l'information "
-    "normalisée. Ne rien inventer : si une section est vide, laisser []."
-)
-_LLM_PROMPT = """Extrais les informations médicales de ce texte OCR français.
-JSON attendu :
-{"pathologies_actives": [], "antecedents": [], "allergies": [],
-"traitements_long_cours": [], "facteurs_risque": [], "vaccinations": [],
-"points_vigilance": []}
+_LLM_SECTIONS_DEF = {
+    "pathologies_actives": "maladies actuelles, motifs, diagnostics du jour",
+    "antecedents": "maladies passées, interventions chirurgicales, antécédents médicaux/chirurgicaux/familiaux",
+    "allergies": "allergies et intolérances (si « aucune allergie » → laisser [])",
+    "traitements_long_cours": "traitements au long cours, ordonnances (garder le dosage s'il est écrit)",
+    "facteurs_risque": "tabac, alcool, obésité, sédentarité, facteurs de risque cardiovasculaire",
+    "vaccinations": "vaccins et rappels (avec la date si présente)",
+    "points_vigilance": "conclusions, recommandations, alertes cliniques, points d'attention",
+}
 
-Texte :
-"""
+_LLM_SYSTEM = (
+    "Tu es un assistant médical français qui remplit un Volet de Synthèse "
+    "Médicale (VSM) à partir du texte OCR d'un document médical (anonymisé).\n"
+    "Règles STRICTES :\n"
+    "1. Réponds UNIQUEMENT en JSON valide, exactement ce schéma :\n"
+    '{"pathologies_actives": [], "antecedents": [], "allergies": [], '
+    '"traitements_long_cours": [], "facteurs_risque": [], "vaccinations": [], '
+    '"points_vigilance": []}\n'
+    '2. Chaque élément est {"valeur": str, "passage": str} : « passage » '
+    "est le texte source REPRODUIT À L'IDENTIQUE (orthographe d'origine, sans "
+    "correction) ; « valeur » est l'information normalisée (orthographe "
+    "corrigée, dosage conservé).\n"
+    "3. N'INVENTE RIEN : si une rubrique est absente du texte, laisse []. "
+    "N'ajoute jamais un diagnostic, un traitement ou une donnée qui n'est pas "
+    "écrite dans le texte.\n"
+    "4. Normalisation : « Diabete de type 2 » → valeur « Diabète de type 2 » ; "
+    "« Metformine 1000 mg matin et soir » → valeur identique (dosage conservé).\n"
+    "5. Contenu des rubriques :\n"
+    + "\n".join(f"   - {k} : {v}" for k, v in _LLM_SECTIONS_DEF.items())
+    + "\n"
+    "6. Négations : « pas d'allergie », « aucune allergie » → allergies = [] "
+    "(sauf si une allergie précise est citée).\n"
+    "7. Les pseudonymes ([PATIENT_001], [DATE_NAISSANCE_001]…) ne vont JAMAIS "
+    "dans « valeur » ; ignore-les pour les rubriques.\n"
+    "8. Si le texte est illisible ou vide, renvoie le schéma avec des listes "
+    "vides (jamais de texte libre hors JSON)."
+)
+
+_LLM_FEW_SHOT = (
+    "\nExemple :\n"
+    'Texte : "ANTECEDENTS : Diabete de type 2 depuis 2010. Hypertension.\n'
+    "ALLERGIES : Penicilline (eruption cutanee).\n"
+    'TRAITEMENTS : Metformine 1000 mg matin et soir."\n'
+    'Réponse : {"pathologies_actives": [], "antecedents": '
+    '[{"valeur": "Diabète de type 2 depuis 2010", '
+    '"passage": "Diabete de type 2 depuis 2010"}, '
+    '{"valeur": "Hypertension artérielle", "passage": "Hypertension"}], '
+    '"allergies": [{"valeur": "Pénicilline", '
+    '"passage": "Penicilline (eruption cutanee)"}], '
+    '"traitements_long_cours": [{"valeur": "Metformine 1000 mg matin et '
+    'soir", "passage": "Metformine 1000 mg matin et soir"}], '
+    '"facteurs_risque": [], "vaccinations": [], "points_vigilance": []}\n'
+)
+
+
+def build_llm_messages(text: str, max_chars: int = 6000) -> list[dict]:
+    """Messages système + utilisateur pour l'extraction LLM (fonction pure,
+    testable sans GPU). Le texte est tronqué pour rester dans le contexte."""
+    user = (
+        "Texte OCR du document (extrait) :\n```\n"
+        + text[:max_chars]
+        + "\n```\nExtrais le JSON des rubriques du VSM en appliquant les règles."
+    )
+    return [
+        {"role": "system", "content": _LLM_SYSTEM + _LLM_FEW_SHOT},
+        {"role": "user", "content": user},
+    ]
+
 
 # Confiance des entités LLM : volontairement conservatrice (< seuil 0,7) —
 # la sortie d'un LLM doit toujours être relue par le médecin (XAI honnête).
@@ -490,10 +543,7 @@ def extract_entities_llm(
     model_path = model_path or str(default_model_path())
     llm = Llama(model_path=model_path, n_ctx=8192, verbose=False)
     out = llm.create_chat_completion(
-        messages=[
-            {"role": "system", "content": _LLM_SYSTEM},
-            {"role": "user", "content": _LLM_PROMPT + text[:6000]},
-        ],
+        messages=build_llm_messages(text),
         response_format={"type": "json_object"},
         temperature=0.0,
         max_tokens=2048,
