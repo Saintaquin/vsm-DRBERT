@@ -148,6 +148,20 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
 - ADR-0007 ; rapport : `outputs/AUDIT_STATISTIQUES.md`.
 - **Tests** : 96 (+3 : agrégats/masquage, absence de détail patient, oubli).
 
+### Logging structuré local + redaction (audit FastAPI/logs validé)
+
+- Audit de faisabilité (outputs/AUDIT_FASTAPI_LOGS.md) — FastAPI est confirmé
+  comme backend (uvicorn 127.0.0.1, `/audit` existant, docs désactivés).
+- `src/ui_backend/logging_setup.py` : fichiers `<VSM_DATA_DIR>/logs/app.log`
+  (rotation 1 Mo × 5, niveau `VSM_LOG_LEVEL`), **filtre de redaction**
+  systématique (NIR, téléphone, email, RPPS/ADELI, tokens de pseudonymisation
+  masqués dans TOUTE entrée — défense en profondeur), **aucun handler réseau**
+  (art. 9 : pas de logs cloud).
+- Points de log sans PII dans `main.py` : démarrage, upload, traitement
+  (moteur OCR/NLP, nb PII), changement de statut VSM, export, erreur moteur.
+- **Tests** : 102 (+6 : écriture/rotation, idempotence, absence de handler
+  réseau, redaction des PII, application à l'écrit).
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

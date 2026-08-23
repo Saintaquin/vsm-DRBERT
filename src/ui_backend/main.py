@@ -31,6 +31,9 @@ from src.ingestion_ocr.pipeline import run_pipeline as ocr_pipeline
 from src.storage.auth import AuthManager
 from src.storage.encrypted_store import EncryptedStore
 from src.storage.key_manager import SessionKey, new_salt
+from src.ui_backend.logging_setup import get_logger, setup_logging
+
+_log = get_logger()
 
 APP_DIR = Path(os.environ.get("VSM_DATA_DIR", Path.home() / ".vsm-ocr"))
 APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -228,6 +231,7 @@ async def upload(file: UploadFile, sess: dict = Depends(current_session)):
         "document_uploaded",
         {"document_id": document_id, "sha256": sha, "size": size},
     )
+    _log.info("document uploadé id=%s taille=%d", document_id, size)
     return {"document_id": document_id, "sha256": sha}
 
 
@@ -254,6 +258,9 @@ def process(document_id: str, body: ProcessIn, sess: dict = Depends(current_sess
     except ValueError as exc:
         # Moteur inconnu ou indisponible sur ce poste (ex. « unlimited »
         # sans carte NVIDIA) → 400 explicite, jamais 500.
+        _log.warning(
+            "moteur OCR indisponible document=%s moteur=%s", document_id, body.engine
+        )
         raise HTTPException(400, str(exc)) from None
     finally:
         os.unlink(tmp_path)
@@ -288,6 +295,14 @@ def process(document_id: str, body: ProcessIn, sess: dict = Depends(current_sess
             "nlp_engine": body.nlp_engine,
             "pii_count": ocr_json["pii_detected_count"],
         },
+    )
+    _log.info(
+        "document traité id=%s vsm=%s ocr=%s nlp=%s pii=%d",
+        document_id,
+        vsm_id,
+        body.engine,
+        body.nlp_engine,
+        ocr_json["pii_detected_count"],
     )
     return {
         "vsm_id": vsm_id,
@@ -380,6 +395,7 @@ def validate_vsm(vsm_id: str, body: ValidateIn, sess: dict = Depends(current_ses
         "vsm_status_changed",
         {"vsm_id": vsm_id, "statut": body.statut},
     )
+    _log.info("vsm %s → statut %s", vsm_id, body.statut)
     return vsm
 
 
@@ -391,6 +407,7 @@ def export_vsm(vsm_id: str, fmt: str = "html", sess: dict = Depends(current_sess
         vsm = sess["store"].load_vsm(vsm_id)
     except KeyError:
         raise HTTPException(404, "VSM introuvable") from None
+    _log.info("export %s vsm=%s", fmt, vsm_id)
     if fmt == "html":
         return HTMLResponse(render_vsm(vsm, "html"))
     if fmt == "markdown":
@@ -532,6 +549,10 @@ if _DIST.exists():
 
 def main():
     import uvicorn
+
+    # Journal applicatif structuré, local, sans PII (outputs/AUDIT_FASTAPI_LOGS.md)
+    setup_logging(APP_DIR)
+    _log.info("VSM-OCR démarré sur 127.0.0.1:8741 (100%% local)")
 
     # 127.0.0.1 STRICTEMENT — jamais 0.0.0.0 (cf. garde-fous projet)
     uvicorn.run(app, host="127.0.0.1", port=8741, log_level="warning")
