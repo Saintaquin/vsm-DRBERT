@@ -201,6 +201,17 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
   bloc ; le passage est aussi entouré d'un liseré ambre (`outline`) pour le
   rendre immédiatement visible.
 
+### Veille technologique — modèles de compréhension de documents (ADR-0008)
+
+- Comparaison LayoutLM / LayoutLMv2 / LayoutXLM / LayoutLMv3 (Microsoft, MIT,
+  encodeurs, CPU) vs **LFM2-VL** (Liquid AI, vision-langage, GPU,
+  ⚠️ **LFM Open License v1.0** custom) — licences vérifiées via l'API HF.
+- **Décision validée : ne pas intégrer pour la soutenance.** Famille LayoutLM
+  écartée (anglais, fine-tuning FR médical indispensable, hors périmètre) ;
+  **LFM2-VL** écarté (licence custom → risque annexe 1 ; doublon d'Unlimited-OCR
+  MIT) ; **LayoutXLM** documenté comme **piste P2** (fine-tuning FR médical
+  futur) au dossier scientifique. Veille : `outputs/AUDIT_LLM_DOCMODELS.md`.
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation
