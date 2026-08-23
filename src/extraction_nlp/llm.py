@@ -172,6 +172,63 @@ def model_available() -> bool:
     return path.exists() and path.stat().st_size > 1_000_000  # ≥ ~1 Mo (en-tête)
 
 
+def available_ram_gb() -> float:
+    """RAM DISPONIBLE (Go) — Windows (GlobalMemoryStatusEx) / POSIX MemAvailable.
+    Diffère de detect_ram_gb() (RAM totale) : c'est la mémoire réellement
+    utilisable pour charger le modèle."""
+    try:
+        if os.name == "nt":  # pragma: no cover
+            import ctypes
+
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            ms = _MEMORYSTATUSEX(dwLength=ctypes.sizeof(_MEMORYSTATUSEX))
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
+            return ms.ullAvailPhys / (1024**3)
+        with open("/proc/meminfo") as f:  # pragma: no cover - POSIX
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 1024 / 1024
+    except Exception:  # noqa: BLE001 - détection best-effort
+        pass
+    return detect_ram_gb()
+
+
+# Marge de sécurité au-delà du poids du modèle : contexte, overhead llama.cpp,
+# OS + application. Un modèle ne doit JAMAIS tourner en échange disque (swap).
+_LLM_RAM_MARGIN_GB = 1.5
+
+
+def llm_feasible() -> tuple[bool, str]:
+    """Le LLM peut-il tourner sur CE poste, MAINTENANT ?
+    (modèle présent + RAM disponible suffisante) → (ok, raison si non ok).
+    Prévention du « traitement infini » : sans ce contrôle, llama.cpp charge
+    le modèle même avec 0,5 Go libres → swap/OOM → job bloqué ou en échec."""
+    if not model_available():
+        return False, "modèle LLM non téléchargé (python -m src.extraction_nlp.llm)"
+    taille_gb = default_model_path().stat().st_size / (1024**3)
+    besoin = taille_gb + _LLM_RAM_MARGIN_GB
+    libre = available_ram_gb()
+    if libre < besoin:
+        return False, (
+            f"RAM disponible insuffisante pour le LLM : {libre:.1f} Go libres "
+            f"pour un besoin ≈ {besoin:.1f} Go (modèle {taille_gb:.1f} Go + "
+            "marge). Repli automatique sur le moteur de règles."
+        )
+    return True, ""
+
+
 def _validate_gguf(path: Path) -> bool:
     """L'en-tête d'un GGUF commence par la signature « GGUF »."""
     try:

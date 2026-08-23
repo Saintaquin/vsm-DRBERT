@@ -72,6 +72,7 @@ export interface Health {
   max_upload_mb?: number;
   available_engines?: string[];
   llm_available?: boolean;
+  llm_reason?: string;
 }
 
 export interface StatsEntry { code: string; libelle: string; count: number | null; masque: boolean; }

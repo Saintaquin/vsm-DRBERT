@@ -267,14 +267,17 @@ def test_health_lists_available_engines(client):
 
 
 def test_health_reports_llm_availability(client, monkeypatch):
-    # LLM par défaut : /health expose sa disponibilité réelle (déterministe ici,
-    # indépendant du modèle présent ou non sur la machine).
+    # LLM par défaut : /health expose la FAISABILITÉ réelle (modèle + RAM),
+    # déterministe ici — indépendant de la machine.
     import src.extraction_nlp.llm as llm_mod
 
-    monkeypatch.setattr(llm_mod, "model_available", lambda: False)
-    assert client.get("/health").json()["llm_available"] is False
-    monkeypatch.setattr(llm_mod, "model_available", lambda: True)
-    assert client.get("/health").json()["llm_available"] is True
+    monkeypatch.setattr(llm_mod, "llm_feasible", lambda: (False, "RAM insuffisante"))
+    h = client.get("/health").json()
+    assert h["llm_available"] is False
+    assert h["llm_reason"] == "RAM insuffisante"
+    monkeypatch.setattr(llm_mod, "llm_feasible", lambda: (True, ""))
+    h = client.get("/health").json()
+    assert h["llm_available"] is True and h["llm_reason"] == ""
 
 
 def test_process_default_nlp_engine_is_llm_with_fallback(client, tmp_path):

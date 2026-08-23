@@ -125,17 +125,20 @@ def current_session(
 # ----------------------------------------------------------------- auth
 @app.get("/health")
 def health():
-    from src.extraction_nlp.llm import model_available
+    from src.extraction_nlp.llm import llm_feasible
 
+    llm_ok, llm_reason = llm_feasible()
     return {
         "status": "ok",
         "max_upload_mb": MAX_UPLOAD_MB,
         # Moteurs OCR réellement disponibles sur ce poste — « unlimited »
         # n'apparaît QUE si une carte NVIDIA est détectée (docs/ADR/0005).
         "available_engines": sorted(ENGINES),
-        # LLM local par défaut : disponible si le modèle (Qwen 2.5 3B) est
-        # téléchargé ; sinon repli automatique sur les règles (ADR-0009).
-        "llm_available": model_available(),
+        # LLM local par défaut : faisable seulement si le modèle EST téléchargé
+        # ET la RAM disponible suffit (sinon repli règles automatique, sans
+        # « traitement infini » — ADR-0009).
+        "llm_available": llm_ok,
+        "llm_reason": llm_reason,
     }
 
 

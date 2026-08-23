@@ -19,18 +19,20 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
   // automatique côté backend si le modèle est absent (docs/ADR-0009).
   const nlpEngine = "llm" as const;
   const [llmAvailable, setLlmAvailable] = useState<boolean>(true);
+  const [llmReason, setLlmReason] = useState<string>("");
   const [maxUploadMb, setMaxUploadMb] = useState<number>(50);
   const [ocrEngine, setOcrEngine] = useState<string>("tesseract");
   const [availableEngines, setAvailableEngines] = useState<string[]>(["tesseract"]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Configuration publiée par le backend : limite d'upload, moteurs OCR
-  // (« unlimited » n'apparaît que sur poste NVIDIA) et disponibilité du LLM.
+  // (« unlimited » n'apparaît que sur poste NVIDIA) et faisabilité du LLM.
   useEffect(() => {
     api.health()
       .then((h) => {
         if (typeof h.max_upload_mb === "number") setMaxUploadMb(h.max_upload_mb);
         if (typeof h.llm_available === "boolean") setLlmAvailable(h.llm_available);
+        if (typeof h.llm_reason === "string") setLlmReason(h.llm_reason);
         if (Array.isArray(h.available_engines) && h.available_engines.length) {
           setAvailableEngines(h.available_engines);
           setOcrEngine(h.available_engines.includes("tesseract") ? "tesseract" : h.available_engines[0]);
@@ -117,8 +119,9 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
           </fieldset>
           {!llmAvailable && (
             <Alerte kind="info">
-              LLM local non téléchargé — l'extraction utilisera le moteur de règles en repli. Pour activer le LLM
-              (Qwen 2.5 3B, ~2 Go, toutes machines) : <code className="font-mono">python -m src.extraction_nlp.llm</code>
+              ⚠ LLM local indisponible : {llmReason || "modèle non téléchargé"}. L'extraction utilise le
+              moteur de règles (repli automatique). Pour activer le LLM :{" "}
+              <code className="font-mono">python -m src.extraction_nlp.llm</code>
             </Alerte>
           )}
           <fieldset className="flex flex-wrap items-center gap-4">

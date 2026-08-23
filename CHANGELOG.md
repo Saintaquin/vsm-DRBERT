@@ -228,6 +228,19 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
   art. 7 (extraction améliorée, XAI conservée).
 - **Tests** : 108 (+4 : prompt system, troncature, santé LLM, défaut + repli).
 
+### Diagnostic « traitement infini / À valider vide » — garde-fou RAM LLM
+
+- **Cause** : le LLM étant par défaut, llama.cpp tentait de charger le modèle
+  (~2 Go) même avec très peu de RAM libre → swap/blocage (traitement « infini »)
+  ou échec du job (aucun VSM → liste « À valider » vide).
+- **Correction** : `llm_feasible()` dans `src/extraction_nlp/llm.py` —
+  le LLM n'est lancé que si le modèle existe ET la **RAM disponible** (mesurée
+  en direct) couvre le modèle + une marge de 1,5 Go ; sinon **repli automatique
+  sur les règles** (aucune tentative llama.cpp) avec raison tracée.
+- `/health` expose `llm_available` + `llm_reason` ; l'UI affiche la raison
+  exacte (modèle absent ou RAM insuffisante).
+- **Tests** : 110 (+2 : garde-fou RAM, LLM sauté quand infaisable).
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

@@ -143,3 +143,36 @@ def test_prompt_truncation():
     msgs = build_llm_messages(long, max_chars=500)
     assert "x" * 500 in msgs[1]["content"]
     assert "x" * 501 not in msgs[1]["content"]
+
+
+def test_llm_feasible_ram_guard(monkeypatch, tmp_path):
+    # Prévention du « traitement infini » : le LLM n'est PAS lancé si la RAM
+    # disponible est insuffisante pour le modèle (marge incluse).
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"GGUF" + b"\x00" * (2 * 1024 * 1024))  # ~2 Mo
+    monkeypatch.setattr(llm_mod, "default_model_path", lambda: model)
+    monkeypatch.setattr(llm_mod, "available_ram_gb", lambda: 0.5)  # 0,5 Go libre
+    ok, reason = llm_mod.llm_feasible()
+    assert ok is False
+    assert "RAM" in reason and "0.5" in reason
+    monkeypatch.setattr(llm_mod, "available_ram_gb", lambda: 10.0)
+    ok, _ = llm_mod.llm_feasible()
+    assert ok is True
+
+
+def test_extract_llm_skipped_when_infeasible(monkeypatch):
+    # engine="llm" mais infaisable (RAM) → on ne tente JAMAIS llama.cpp,
+    # on retombe directement sur les règles.
+    from src.extraction_nlp import entity_extractor as ee
+
+    monkeypatch.setattr(llm_mod, "llm_feasible", lambda: (False, "RAM insuffisante"))
+    called = {"llm": False}
+
+    def fake_llm(text):  # pragma: no cover - ne doit jamais être appelée
+        called["llm"] = True
+        return []
+
+    monkeypatch.setattr(ee, "extract_entities_llm", fake_llm)
+    ents = ee.extract_entities("ANTECEDENTS : Diabete de type 2.", engine="llm")
+    assert called["llm"] is False
+    assert any(e.section == "antecedents" for e in ents)

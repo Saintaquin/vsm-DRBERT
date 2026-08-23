@@ -581,8 +581,15 @@ def extract_entities_llm(
 
 def extract_entities(text: str, engine: str = "rules") -> list[ExtractedEntity]:
     if engine == "llm":
-        try:  # pragma: no cover
-            return extract_entities_llm(text)
-        except Exception:
-            pass  # repli documenté sur les règles
+        # Garde-fou : ne JAMAIS lancer llama.cpp si le poste ne peut pas
+        # charger le modèle (modèle absent OU RAM disponible insuffisante) —
+        # sinon swap/OOM → traitement « infini » et VSM jamais créé.
+        from .llm import llm_feasible
+
+        feasible, _reason = llm_feasible()
+        if feasible:
+            try:  # pragma: no cover
+                return extract_entities_llm(text)
+            except Exception:
+                pass  # repli documenté sur les règles (erreur d'inférence)
     return extract_entities_free_text_fallback(text, extract_entities_rules(text))
