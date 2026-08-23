@@ -181,6 +181,18 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
 - **Tests** : 103 (+1 : flux asynchrone processing → done, VSM visible sans
   nouvelle session).
 
+### Correction « Voir le passage source » (incohérence d'identifiants)
+
+- **Problème** : `run_pipeline()` générait son propre `document_id` interne à
+  chaque exécution, différent de l'id du document uploadé → le VSM référençait
+  un id fantôme (`source.document_id`) → `GET /documents/{id}/ocr` renvoyait
+  404 dans le visualiseur. Bug latent depuis l'origine.
+- **Correction** : `run_pipeline(document_id=…)` accepte l'id externe à
+  préserver ; le job de traitement lui passe l'id d'upload. `source.document_id`
+  == id uploadé == clé de stockage OCR → le surlignage fonctionne.
+- **Tests** : 104 (+1 : cohérence des ids + passage retrouvable via
+  `/documents/{id}/ocr`).
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation

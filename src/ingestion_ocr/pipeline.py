@@ -51,8 +51,15 @@ def run_pipeline(
     anonymize_mode: str = "pseudo",
     preprocess: bool = True,
     dossier_id: str | None = None,
+    document_id: str | None = None,
 ) -> dict:
     """Exécute le pipeline complet sur un document.
+
+    ``document_id`` (optionnel) : identifiant EXTERNE à préserver (ex. id du
+    document uploadé) — sans lui, un identifiant interne est généré. IMPORTANT
+    pour la cohérence « passage source » : le VSM référence ce document_id
+    (source.document_id) ; il doit correspondre à la clé sous laquelle l'OCR
+    est stocké (bug « Voir le passage source » corrigé).
 
     anonymize_mode : "off" (déconseillé), "pseudo" (réversible via coffre),
     "strict" (irréversible). Le mapping de pseudonymisation est retourné dans
@@ -66,7 +73,7 @@ def run_pipeline(
     if anonymize_mode not in ("off", "pseudo", "strict"):
         raise ValueError(f"anonymize_mode invalide : {anonymize_mode}")
 
-    document_id = f"doc_{uuid.uuid4().hex[:12]}"
+    document_id = document_id or f"doc_{uuid.uuid4().hex[:12]}"
     sha256 = _sha256_file(input_path)
     ocr = get_engine(engine)
 

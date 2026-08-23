@@ -334,6 +334,9 @@ def _run_process_job(
                 engine=body.engine,
                 anonymize_mode=body.anonymize_mode,
                 dossier_id=document_id,
+                # Cohérence « passage source » : le VSM référence CE document_id
+                # (source.document_id) ; il doit égaler la clé de stockage OCR.
+                document_id=document_id,
             )
         finally:
             os.unlink(tmp_path)

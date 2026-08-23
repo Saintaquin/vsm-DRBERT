@@ -145,6 +145,50 @@ def test_process_async_flow(client, tmp_path):
     assert any(v["id"] == result["vsm_id"] for v in vsms)
 
 
+def test_passage_source_document_id_coherent(client, tmp_path):
+    # « Voir le passage source » : source.document_id du VSM doit égaler l'id
+    # d'upload (clé de stockage OCR) — sinon le visualiseur renvoie 404.
+    headers = _login(client)
+    synth = (
+        Path(__file__).resolve().parents[2] / "data" / "synthetic" / "cas_001_clean.png"
+    )
+    if not synth.exists():
+        pytest.skip("dataset non généré")
+    up = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("cas.png", synth.read_bytes(), "image/png")},
+    )
+    doc_id = up.json()["document_id"]
+    result = _process_and_wait(
+        client, headers, doc_id, engine="tesseract", anonymize_mode="pseudo"
+    )
+    vsm_id = result["vsm_id"]
+    vsm = client.get(f"/vsm/{vsm_id}", headers=headers).json()
+
+    # 1) source.document_id == id uploadé (et non un id interne généré)
+    sources = [
+        it["source"]["document_id"]
+        for items in vsm["sections"].values()
+        for it in items
+        if it.get("source", {}).get("document_id")
+    ]
+    assert sources, "aucune source documentée"
+    assert all(d == doc_id for d in sources), f"ids incohérents : {set(sources)}"
+
+    # 2) le passage est bien retrouvable via GET /documents/{doc_id}/ocr
+    ocr = client.get(f"/documents/{doc_id}/ocr", headers=headers)
+    assert ocr.status_code == 200
+    text = ocr.json()["text"]
+    passages = [
+        it["source"]["passage"]
+        for items in vsm["sections"].values()
+        for it in items
+        if it.get("source", {}).get("passage")
+    ]
+    assert any(p in text for p in passages)
+
+
 def test_export_pdf(client, tmp_path):
     # Export PDF : réponse application/pdf téléchargeable (ReportLab local).
     headers = _login(client)
