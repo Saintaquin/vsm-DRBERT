@@ -46,27 +46,27 @@ _OCR_PDF_BATCH = int(os.environ.get("VSM_OCR_PDF_BATCH", "20"))
 def _load_pages(input_path: Path):
     """Générateur (numéro de page réel, image). Pour les PDF : par LOTS de
     pages — la conversion complète d'un gros PDF en une fois provoque une
-    saturation mémoire (résultat OCR vide). Pour une image : une seule page."""
+    saturation mémoire (résultat OCR vide). Pour une image : une seule page.
+
+    Pas de dépendance pypdf : la fin du document est détectée quand un lot est
+    vide (pdf2image retourne [] au-delà de la dernière page)."""
     suffix = input_path.suffix.lower()
     if suffix == ".pdf":
         from pdf2image import convert_from_path
-        from pypdf import PdfReader
-
-        try:
-            total = len(PdfReader(str(input_path)).pages)
-        except Exception as exc:  # document entier illisible
-            raise RuntimeError(f"PDF illisible : {exc}") from exc
 
         def _gen():
-            for start in range(0, total, _OCR_PDF_BATCH):
-                end = min(start + _OCR_PDF_BATCH, total)
+            start = 0
+            while True:
                 pages = convert_from_path(
                     str(input_path),
                     dpi=200,
                     first_page=start + 1,
-                    last_page=end,
+                    last_page=start + _OCR_PDF_BATCH,
                 )
+                if not pages:  # fin du document
+                    break
                 yield from enumerate(pages, start=start + 1)
+                start += _OCR_PDF_BATCH
 
         return _gen()
 
@@ -115,45 +115,48 @@ def run_pipeline(
 
     try:
         pages = _load_pages(input_path)
-    except Exception as exc:  # document entier illisible
+    except Exception as exc:  # document entier illisible (création du générateur)
         raise RuntimeError(f"Document illisible : {exc}") from exc
 
-    for idx, page_img in pages:
-        try:
-            if preprocess:
-                pre = preprocess_image(page_img)
-                img, pre_meta = (
-                    pre["processed"],
+    try:
+        for idx, page_img in pages:
+            try:
+                if preprocess:
+                    pre = preprocess_image(page_img)
+                    img, pre_meta = (
+                        pre["processed"],
+                        {
+                            "steps_applied": pre["steps_applied"],
+                            "angle_corrected": pre["angle_corrected"],
+                            "preprocessing_time_sec": pre["processing_time_sec"],
+                        },
+                    )
+                else:
+                    img, pre_meta = page_img, {"steps_applied": []}
+                result = ocr.recognize(img, lang=lang)
+                raw_pages.append(result.text)
+                pages_out.append(
                     {
-                        "steps_applied": pre["steps_applied"],
-                        "angle_corrected": pre["angle_corrected"],
-                        "preprocessing_time_sec": pre["processing_time_sec"],
-                    },
+                        "page": idx,
+                        "text": result.text,
+                        "confidence": result.confidence,
+                        "words": result.words,
+                        **pre_meta,
+                    }
                 )
-            else:
-                img, pre_meta = page_img, {"steps_applied": []}
-            result = ocr.recognize(img, lang=lang)
-            raw_pages.append(result.text)
-            pages_out.append(
-                {
-                    "page": idx,
-                    "text": result.text,
-                    "confidence": result.confidence,
-                    "words": result.words,
-                    **pre_meta,
-                }
-            )
-        except Exception as exc:
-            anomalies.append({"page": idx, "error": str(exc)})
-            pages_out.append(
-                {
-                    "page": idx,
-                    "text": "",
-                    "confidence": 0.0,
-                    "words": [],
-                    "error": str(exc),
-                }
-            )
+            except Exception as exc:  # page individuelle en erreur
+                anomalies.append({"page": idx, "error": str(exc)})
+                pages_out.append(
+                    {
+                        "page": idx,
+                        "text": "",
+                        "confidence": 0.0,
+                        "words": [],
+                        "error": str(exc),
+                    }
+                )
+    except Exception as exc:  # erreur de conversion d'un lot PDF (poppler)
+        raise RuntimeError(f"Document illisible : {exc}") from exc
 
     full_text = "\n\n".join(raw_pages)
 

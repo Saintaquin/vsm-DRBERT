@@ -275,6 +275,16 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
   d'utilisation — peut être lent » sinon.
 - **Tests** : 114 (+1 timeout ; tests de la nouvelle sémantique).
 
+### Correction « Document illisible : No module named 'pypdf' »
+
+- Le découpage par lots utilisait `pypdf` pour compter les pages — absente de
+  Python 3.12 (l'environnement LLM) → erreur au traitement d'un PDF.
+- **Correction** : suppression de la dépendance — la fin du document est
+  détectée quand un lot est vide (pdf2image retourne `[]` au-delà de la
+  dernière page) ; l'erreur poppler de conversion de lot est rattachée à
+  « Document illisible ». Seule `pdf2image` (déjà requise) est utilisée.
+- **Tests** : 114 (découpage en lots validé sans pypdf).
+
 ## [1.0.0] — 2026-06-12
 
 ### Phase 1 — Anonymisation
