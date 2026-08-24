@@ -152,6 +152,7 @@ python -m examples.demo_nlp               # démo extraction NLP sur texte exemp
 - `docs/USER_MANUAL.md` — manuel utilisateur (médecin / secrétaire / admin)
 - `docs/ANONYMIZATION.md` — stratégies, limites connues, procédure droit à l'oubli
 - `docs/COMPLIANCE.md` — matrice RGPD / HDS / XAI
+- `docs/LICENCES_TIERS.md` — inventaire des licences tiers (conformité annexe 1)
 - `docs/SECURITY.md` — modèle de menace, mesures, procédure d'incident
 - `docs/ADR/` — décisions d'architecture (format MADR), dont
   `0010-drbert-extraction.md` (NER médical) et `0009-llm-par-defaut-universel.md`
@@ -162,3 +163,7 @@ python -m examples.demo_nlp               # démo extraction NLP sur texte exemp
 Le dataset `data/synthetic/` est **100 % fictif** (identités générées,
 seed 42). Aucune donnée patient réelle ne doit jamais être committée — la CI
 bloque les patterns de NIR hors dataset synthétique.
+
+La **conformité des licences tiers** (modèles d'IA, bibliothèques, binaires) est
+documentée dans [`docs/LICENCES_TIERS.md`](docs/LICENCES_TIERS.md) — compatible
+avec l'Annexe 1 (usage commercial permis pour DrBERT, Apache-2.0 pour les LLM).

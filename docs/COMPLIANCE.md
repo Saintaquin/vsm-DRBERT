@@ -1,5 +1,9 @@
 # Conformité — matrice RGPD / HDS / XAI
 
+> La **propriété intellectuelle** et les **licences tiers** sont traitées à part,
+> dans [`docs/LICENCES_TIERS.md`](LICENCES_TIERS.md) (section conforme à
+> l'annexe 1), car elles relèvent d'une logique différente de la RGPD.
+
 ## RGPD
 
 | Exigence | Mise en œuvre | Fichier(s) | Vérifié par |
@@ -55,3 +59,16 @@ l'établissement, l'agrément HDS n'est donc pas requis dans ce mode.
   possibles par l'interpréteur) — documenté dans `docs/SECURITY.md`.
 - Les référentiels CIM-10/ATC embarqués sont des extraits de démonstration ;
   charger les référentiels complets ATIH/WHOCC avant production.
+
+## Licences et propriété intellectuelle
+
+- **Modèles d'IA** : DrBERT-MedicalNER-FR (licence « style OpenRAIL »
+  personnalisée, **usage commercial permis**, pas de clause interdisant
+  l'usage médical) ; LLM Qwen 2.5 (Apache-2.0) ; OCR unlimited (MIT).
+- **Bibliothèques** : toutes permissives OSI (MIT / BSD / Apache-2.0 /
+  MIT-CMU / CC-BY-4.0) — aucune copyleft « forte » liée au prototype.
+- **Binaires externes** : Tesseract (Apache-2.0) et Poppler (**GPL-2.0**),
+  appelés en sous-process (non liés → n'imposent pas GPL au prototype).
+- **Dataset** : `data/synthetic/` 100 % fictif ; `MedicalNER_Fr` CC-BY-4.0.
+
+Détail et conformité annexe 1 : [`docs/LICENCES_TIERS.md`](LICENCES_TIERS.md).

@@ -19,7 +19,11 @@ jiwer>=3.0                     # CER/WER pour le benchmark
 # llama-cpp-python>=0.2      # moteur NLP LLM local (modèle Apache 2.0 dans
 #                            # ~/.cache/vsm-ocr/ — voir docs/ADR/0004 ; jamais
 #                            # committé ; téléchargement à l'installation)
-# torch + transformers       # moteur OCR « unlimited » (baidu, MIT — docs/ADR/0005) ;
-#                            # exige une carte NVIDIA (CUDA) ; absent sinon
+# torch + transformers       # (1) NER DrBERT-MedicalNER-FR (licence « style
+#                            #     OpenRAIL », usage commercial permis — docs/ADR/0010) ;
+#                            # (2) moteur OCR « unlimited » (baidu, MIT — docs/ADR/0005).
+#                            # transformers épinglé >=4.53,<5 (la 5.x casse le
+#                            # tokenizer CamemBERT). Présents seulement dans
+#                            # l'environnement Python 3.12 (extraction).
 # spacy>=3.7                   # détection PII renforcée (fr_core_news_lg)
 # python-doctr / paddleocr     # moteurs OCR alternatifs pour le benchmark
