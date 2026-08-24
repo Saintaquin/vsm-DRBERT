@@ -89,7 +89,8 @@ src/
 ├── ingestion_ocr/    preprocessing, moteurs OCR (Tesseract + adaptateurs DocTR/Paddle),
 │                     pipeline document→JSON, benchmark CER/WER, dataset synthétique
 ├── extraction_nlp/   extraction par rubriques (moteur règles offline ; adaptateur LLM
-│                     local llama-cpp optionnel), normalisation CIM-10/ATC (rapidfuzz)
+│                     local llama-cpp ; NER DrBERT-MedicalNER-FR léger CPU),
+│                     normalisation CIM-10/ATC (rapidfuzz)
 ├── vsm_generation/   assemblage VSM (ordre HAS, complétude, validation jsonschema),
 │                     rendu markdown / HTML / PDF
 ├── storage/          SQLite chiffré champ par champ (AES-256-GCM), clés de session
@@ -117,10 +118,29 @@ python -m src.extraction_nlp.llm              # télécharge Qwen 2.5 3B (~2 Go)
 Sans téléchargement, l'UI avertit et le moteur de règles prend le relais.
 Voir `docs/ADR/0009-llm-par-defaut-universel.md` et `docs/ADR/0004-llm-local-choix-modele.md`.
 
+### NER médical français — DrBERT (léger, complémentaire)
+
+Un **NER médical français** (DrBERT-MedicalNER-FR, CamemBERT biomédical) est
+intégré et **complète automatiquement** l'extraction (règles **ou** LLM) avec
+les entités manquantes. Très léger (CPU ≤ 1 Go) → tourne même sur les postes
+4-8 Go sans GPU (réponse à « un moteur NLP sur toutes les machines »),
+spécialisé français médical.
+
+```bash
+py -3.12 -m pip install torch transformers\>=4.53,\<5   # environnement Python 3.12
+python -m src.extraction_nlp.drbert                     # télécharge le modèle (~500 Mo) — install, jamais au traitement
+```
+
+- **Complémentaire, non bloquant** : aucun choix à faire dans l'UI ; la
+  provenance est tracée (`moteur_nlp="drbert-nlp-v1"`).
+- **Confiance réelle** (probabilité du label) : sous 0,7 → champ « À valider ».
+- **Licence** : base Apache 2.0 (propre) ; **checkpoint OpenRAIL** ⚠️ — voir
+  `docs/ADR/0010-drbert-extraction.md` et `outputs/AUDIT_DRBERT.md`.
+
 ## Tests, qualité, benchmark
 
 ```bash
-pytest tests/ -v                          # 108 tests (anonymisation, OCR, NLP, LLM, VSM, storage, API)
+pytest tests/ -v                          # 120 tests (anonymisation, OCR, NLP, LLM, DrBERT, VSM, storage, API)
 python -m src.ingestion_ocr.benchmark     # CER/WER → outputs/benchmark.csv + BENCHMARK_REPORT.md
 python -m examples.demo_nlp               # démo extraction NLP sur texte exemple
 ```
@@ -131,7 +151,8 @@ python -m examples.demo_nlp               # démo extraction NLP sur texte exemp
 - `docs/ANONYMIZATION.md` — stratégies, limites connues, procédure droit à l'oubli
 - `docs/COMPLIANCE.md` — matrice RGPD / HDS / XAI
 - `docs/SECURITY.md` — modèle de menace, mesures, procédure d'incident
-- `docs/ADR/` — décisions d'architecture (format MADR)
+- `docs/ADR/` — décisions d'architecture (format MADR), dont
+  `0010-drbert-extraction.md` (NER médical) et `0009-llm-par-defaut-universel.md`
 - `outputs/BENCHMARK_REPORT.md` — benchmark OCR reproductible
 
 ## Licence et données

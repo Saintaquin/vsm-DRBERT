@@ -2,6 +2,37 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.1.0] — 2026-08-22
+
+### DrBERT-MedicalNER-FR — NER médical français (extraction d'entités, CPU léger)
+
+- **Nouveau moteur** (`src/extraction_nlp/drbert.py`) : NER de
+  token-classification de **DrBERT-MedicalNER-FR** (CamemBERT biomédical).
+  Très léger (CPU ≤ 1 Go, ~500 Mo fp32 / ~150 Mo quantizé) → **tourne même sur
+  les postes 4-8 Go sans GPU** ; spécialisé français médical.
+- **Automatiquement complémentaire** (`entity_extractor.py`) : `_augment_with_drbert`
+  ajoute les entités **manquantes** (non destructif, dédupliqué) en aval du
+  moteur **règles** **ou** **LLM** — le rappel est amélioré sur les documents
+  non rubriqués. Provenance tracée : `moteur_nlp="drbert-nlp-v1"`.
+- **Regroupement au niveau du mot** (correction d'un bug de fragmentation) :
+  le NER est entraîné par mot et répète « B- » sur les sous-mots → agrégation
+  sous-mots→mots (`word_ids` + `offset_mapping`) puis regroupement basé sur
+  l'étiquette (B-/I- ignorés). « Metformine » n'est plus scindé en fragments ;
+  les **offsets caractères sont précis** (le surlignage « Voir le passage
+  source » fonctionne).
+- **Confiance réelle** : probabilité softmax du label (sous `DRBERT_CONFIDENCE`
+  = 0,7 → « À valider »), pas une constante.
+- **Licence** : base **Apache 2.0** (propre, annexe 1) ; **checkpoint
+  OpenRAIL** ⚠️ à valider — signalé dans `docs/ADR/0010-drbert-extraction.md`
+  et `outputs/AUDIT_DRBERT.md` ; la brique est isolée pour un repli sans impact.
+- **Dépendances** : `torch` (CPU) + `transformers >=4.53,<5` (épinglé — la 5.x
+  casse le tokenizer CamemBERT). Téléchargement du modèle **à l'installation**
+  (`python -m src.extraction_nlp.drbert`), jamais au traitement (art. 9).
+- **Conformité** : art. 9 (100 % local, modèle à l'installation) ; art. 7
+  (rappel d'extraction, XAI conservée avec confiance et moteur tracés).
+- **Tests** : +8 (regroupement BIO, mapping étiquettes→VSM, contexte
+  antécédent, disponibilité, augmentation dédupliquée) → **120 tests verts**.
+
 ## [1.0.1] — 2026-08-20
 
 ### Corrections d'audit (concours IA & Santé — rapport outputs/AUDIT_CONFORMITE_RAPPORT.md)

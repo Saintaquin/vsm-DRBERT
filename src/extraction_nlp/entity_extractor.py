@@ -618,9 +618,57 @@ def _extract_llm_with_timeout(text: str, timeout: float):
     return box["ents"], False
 
 
+def _drbert_entities_to_extracted(
+    text: str, added: list[dict]
+) -> list[ExtractedEntity]:
+    """Convertit les dicts d'entités DrBERT en ExtractedEntity (moteur tracé)."""
+    from .drbert import NLP_ENGINE_DRBERT
+
+    return [
+        ExtractedEntity(
+            valeur=d["valeur"],
+            section=d["section"],
+            confiance=d["confiance"],
+            passage=d.get("passage", d["valeur"]),
+            offset_debut=d.get("offset_debut", 0),
+            offset_fin=d.get("offset_fin", 0),
+            moteur_nlp=NLP_ENGINE_DRBERT,
+        )
+        for d in added
+    ]
+
+
+def _augment_with_drbert(
+    base: list[ExtractedEntity], text: str
+) -> list[ExtractedEntity]:
+    """Ajoute les entités détectées par DrBERT (NER médical FR) manquantes.
+
+    Non destructif : ne remplace rien, complète le rappel sur les documents
+    non rubricables. Léger (CPU) → utile sur les petites machines. Silencieux
+    si torch/transformers absents ou si le modèle échoue (repli = sortie base)."""
+    from .drbert import extract_entities_drbert, is_available
+
+    if not is_available() or not text.strip():
+        return base
+    try:
+        added = extract_entities_drbert(text)
+    except Exception:
+        return base  # DrBERT indisponible/erreur → on garde la sortie de base
+    existing = {(e.valeur.strip().lower(), e.section) for e in base}
+    out = list(base)
+    for ent in _drbert_entities_to_extracted(text, added):
+        key = (ent.valeur.strip().lower(), ent.section)
+        if key in existing:
+            continue
+        existing.add(key)
+        out.append(ent)
+    return out
+
+
 def extract_entities(text: str, engine: str = "rules") -> list[ExtractedEntity]:
     global _LLM_ABORTED  # déclaration en tête (utilisé ci-dessous)
 
+    base: list[ExtractedEntity]
     if engine == "llm":
         # Exigence : le LLM est TENTÉ sur toutes les machines dès que le modèle
         # est présent (la RAM ne bloque plus). Deux garde-fous évitent le
@@ -637,14 +685,29 @@ def extract_entities(text: str, engine: str = "rules") -> list[ExtractedEntity]:
                     _log.warning(
                         "LLM dépassé le délai d'inférence (machine lente) — repli règles"
                     )
+                    base = extract_entities_free_text_fallback(
+                        text, extract_entities_rules(text)
+                    )
                 elif ents:
-                    return ents
+                    base = ents
                 else:
                     _log.info("LLM a renvoyé une sortie vide — repli règles (hybride)")
-                # sortie vide → hybride : on tente les règles ci-dessous
+                    base = extract_entities_free_text_fallback(
+                        text, extract_entities_rules(text)
+                    )
             except Exception:
                 _log.warning("Erreur d'inférence LLM — repli règles")
-                pass  # repli documenté sur les règles (erreur d'inférence)
-        elif not _LLM_ABORTED:
-            _log.info("LLM non tenté (modèle absent) — moteur de règles")
-    return extract_entities_free_text_fallback(text, extract_entities_rules(text))
+                base = extract_entities_free_text_fallback(
+                    text, extract_entities_rules(text)
+                )
+        else:
+            if not _LLM_ABORTED:
+                _log.info("LLM non tenté (modèle absent) — moteur de règles")
+            base = extract_entities_free_text_fallback(
+                text, extract_entities_rules(text)
+            )
+    else:
+        base = extract_entities_free_text_fallback(text, extract_entities_rules(text))
+
+    # Augmentation par DrBERT (NER médical FR) — amélioration du rappel.
+    return _augment_with_drbert(base, text)
