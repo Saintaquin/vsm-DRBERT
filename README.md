@@ -134,8 +134,10 @@ python -m src.extraction_nlp.drbert                     # télécharge le modèl
 - **Complémentaire, non bloquant** : aucun choix à faire dans l'UI ; la
   provenance est tracée (`moteur_nlp="drbert-nlp-v1"`).
 - **Confiance réelle** (probabilité du label) : sous 0,7 → champ « À valider ».
-- **Licence** : base Apache 2.0 (propre) ; **checkpoint OpenRAIL** ⚠️ — voir
-  `docs/ADR/0010-drbert-extraction.md` et `outputs/AUDIT_DRBERT.md`.
+- **Licence** : base Apache 2.0 (propre) ; checkpoint en licence « style
+  OpenRAIL » personnalisée (usage commercial permis, pas de clause interdisant
+  l'usage médical — à documenter au dossier). Voir
+  `docs/ADR/0010-drbert-extraction.md` et `outputs/AUDIT_DRBERT.md` (§2a).
 
 ## Tests, qualité, benchmark
 

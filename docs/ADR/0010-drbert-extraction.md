@@ -24,12 +24,16 @@ postes les plus lents.
 | **DrBERT-MedicalNER-FR** | DrBERT-7GB | fine-tuné NER | ~500 Mo fp32 / ~150 Mo quantizé | ≤ 1 Go | non requis | **Spécialisé** ✅ |
 
 - **Base DrBERT-7GB** : **Apache 2.0** → licence propre pour l'annexe 1.
-- **Checkpoint DrBERT-MedicalNER-FR** : **OpenRAIL** ⚠️ (contraintes
-  d'utilisation à vérifier pour l'annexe 1 ; l'ADR-constat et l'audit le
-  signalent — cf. `outputs/AUDIT_DRBERT.md`). Si la licence ne passe pas la
-  revue du jury, repli prévu : re-parameterisation ou remplacement du checkpoint ;
-  la **base** (Apache 2.0) reste utilisable, donc la dépendance est isolée dans
-  `src/extraction_nlp/drbert.py`.
+- **Checkpoint DrBERT-MedicalNER-FR** : licence « style OpenRAIL »
+  **personnalisée** (fichier `LICENSE` du repo), **plus permissive que la
+  licence OpenRAIL-M officielle** — **usage commercial explicitement permis**,
+  et **pas de clause interdisant l'usage médical** (la vraie OpenRAIL-M
+  l'interdirait via *Attachment A* `(l)` ; absente ici). L'usage médical n'est
+  traité que par un **disclaimer** (§4) : à respecter en documentant un VSM
+  « brouillon à valider par un médecin ». Détaillé dans
+  `outputs/AUDIT_DRBERT.md` (§2a). Repli si le jury exige de l'Apache pur :
+  re-paramétrer/remplacer le checkpoint — la **base** (Apache 2.0) reste
+  utilisable, la dépendance est isolée dans `src/extraction_nlp/drbert.py`.
 - **Modèle** : `spideystreet/DrBERT-MedicalNER-FR` (configurable
   `VSM_DRBERT_MODEL`). Téléchargé **à l'installation** (CLI
   `python -m src.extraction_nlp.drbert`), jamais pendant le traitement
@@ -66,9 +70,12 @@ postes les plus lents.
 - **Art. 9** : 100 % local (torch/transformers CPU). Modèle téléchargé à
   l'installation, jamais au traitement. Inférence sur texte déjà pseudonymisé,
   aucun appel réseau.
-- **Annexe 1** : **base Apache 2.0** (propre). **Checkpoint OpenRAIL** ⚠️ — à
-  valider avant remise (cf. `outputs/AUDIT_DRBERT.md`). Le code isole la
-  brique pour un remplacement sans impact.
+- **Annexe 1** : **base Apache 2.0** (propre). Checkpoint : licence « style
+  OpenRAIL » personnalisée → **compatible** (usage commercial permis, pas de
+  clause interdisant l'usage médical ; disclaimer à respecter). À formuler :
+  le modèle est fourni **sous sa licence amont** (attribution §5), pas
+  re-licencié comme notre œuvre ; l'app (code) reste sous notre licence.
+  Détaillé dans `outputs/AUDIT_DRBERT.md` (§2a).
 - **Art. 7** : rappel d'extraction amélioré sur les documents non rubriqués
   (NER spécialisé) ; **XAI conservée** (confiance réelle, seuil 0,7, source et
   moteur tracés).
@@ -84,5 +91,6 @@ postes les plus lents.
 - + Rappel amélioré (le NER détecte des entités que les règles/le LLM
   manquent) ;
 - − Téléchargement du modèle à l'installation (une fois) ;
-- − Licence OpenRAIL du checkpoint à examiner pour l'annexe 1 (base Apache 2.0
-  sûre ; le code est isolé pour un repli).
+- − Licence « style OpenRAIL » personnalisée et révisable → documenter
+  (attribution, disclaimer médical, transmission sous licence amont) ; plage de
+  repli Apache 2.0 si le jury exige moins de conditions (brique isolée).

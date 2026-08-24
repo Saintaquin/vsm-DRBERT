@@ -22,9 +22,11 @@ Format : [Keep a Changelog] · Versionnage : SemVer.
   source » fonctionne).
 - **Confiance réelle** : probabilité softmax du label (sous `DRBERT_CONFIDENCE`
   = 0,7 → « À valider »), pas une constante.
-- **Licence** : base **Apache 2.0** (propre, annexe 1) ; **checkpoint
-  OpenRAIL** ⚠️ à valider — signalé dans `docs/ADR/0010-drbert-extraction.md`
-  et `outputs/AUDIT_DRBERT.md` ; la brique est isolée pour un repli sans impact.
+- **Licence** : base **Apache 2.0** (propre) ; checkpoint en licence « style
+  OpenRAIL » **personnalisée** → **compatible annexe 1** (usage commercial
+  permis, pas de clause interdisant l'usage médical ; disclaimer de validation
+  à respecter). Verdict détaillé dans `docs/ADR/0010-drbert-extraction.md` et
+  `outputs/AUDIT_DRBERT.md` (§2a) ; brique isolée pour un repli sans impact.
 - **Dépendances** : `torch` (CPU) + `transformers >=4.53,<5` (épinglé — la 5.x
   casse le tokenizer CamemBERT). Téléchargement du modèle **à l'installation**
   (`python -m src.extraction_nlp.drbert`), jamais au traitement (art. 9).
