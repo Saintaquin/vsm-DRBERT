@@ -127,21 +127,25 @@ def test_light_model_for_small_machines():
 
 
 def test_prompt_system_is_structured():
-    # Système de prompt efficace : schéma JSON, anti-hallucination,
-    # normalisation, négations, few-shot, pseudonymes exclus.
+    # Système de prompt efficace : schéma JSON, interdits en premier, refus par
+    # défaut, few-shot avec un exemple de refus, aucun nom clinique dans les
+    # descriptions de rubriques (anti-hallucination).
     msgs = build_llm_messages("ANTECEDENTS : Diabete de type 2.", max_chars=2000)
     assert msgs[0]["role"] == "system" and msgs[1]["role"] == "user"
     system = msgs[0]["content"]
     # schéma JSON strict présent
     assert '"pathologies_actives"' in system
     assert '"points_vigilance"' in system
-    # anti-hallucination + normalisation + négations + pseudonymes
-    assert "N'INVENTE RIEN" in system
-    assert "Diabète de type 2" in system  # exemple de normalisation
-    assert "aucune allergie" in system
-    assert "PATIENT_001" in system  # pseudonymes interdits dans valeur
-    # few-shot : un exemple de réponse est intégré
-    assert '"valeur": "Diabète de type 2 depuis 2010"' in system
+    # les interdits passent en premier (refus = comportement par défaut)
+    assert "INTERDITS" in system
+    assert "mot pour mot" in system
+    assert "crochets" in system
+    assert "en-tête" in system
+    assert "Une liste vide est une bonne réponse" in system
+    # few-shot : un exemple de REFUS (réponse vide) est intégré
+    assert '"pathologies_actives": [], "antecedents": []' in system
+    # aucune valeur clinique concrète dans les descriptions de rubriques
+    assert "tabac, alcool" not in system  # l'ancien piège à hallucination
     # le texte utilisateur est tronqué (borne max_chars)
     assert len(msgs[1]["content"]) < 2200
 
@@ -155,7 +159,8 @@ def test_prompt_truncation():
 
 def test_correction_prompt_structured():
     # Phase 1 dédiée : system prompt de correction OCR (erreurs typiques,
-    # doses/pseudonymes intouchables, sortie JSON stricte).
+    # doses/pseudonymes intouchables, sortie JSON stricte, interdiction de
+    # deviner).
     msgs = build_correction_messages("ANTECEDENTS : Diabete de type 2.", max_chars=2000)
     assert msgs[0]["role"] == "system" and msgs[1]["role"] == "user"
     system = msgs[0]["content"]
@@ -163,7 +168,8 @@ def test_correction_prompt_structured():
     assert "diabete" in system and "diabète" in system
     assert "PATIENT_001" in system  # pseudonymes conservés à l'identique
     assert "1000 mg" in system  # doses conservées à l'identique
-    assert "devinette" in system  # interdiction d'inventer
+    assert "devines" in system  # interdiction d'inventer
+    assert "RECOPIE À L'IDENTIQUE" in system  # refus de nettoyer à tout prix
 
 
 def test_extraction_prompt_with_raw_and_corrected():
@@ -196,7 +202,9 @@ def test_anchor_recycled_passage_downgraded():
     # Le LLM a recyclé un passage qui ne contient pas la valeur → niveau 0
     # (pas de fausse confiance 0,9).
     idx, length, niveau, eff = ee._anchor(
-        "ANTECEDENTS : Diabete de type 2.", "Diabete de type 2", "Hypertension artérielle"
+        "ANTECEDENTS : Diabete de type 2.",
+        "Diabete de type 2",
+        "Hypertension artérielle",
     )
     assert niveau == 0
 
@@ -229,6 +237,125 @@ def test_anchor_fuzzy_tolerates_punctuation():
 def test_anchor_unfound_hallucination():
     idx, length, niveau, eff = ee._anchor("Bilan normal.", "Rien", "Tout va bien")
     assert niveau == 0 and eff == ""
+
+
+# ---------------------------------------------------------------------------
+# Garde-fou aval : valider_sortie / valider_element
+# ---------------------------------------------------------------------------
+
+
+def test_valider_conserve_element_ancre():
+    brut = {
+        "antecedents": [
+            {"valeur": "Appendicectomie en 1998", "passage": "appendicectomie en 1998"}
+        ]
+    }
+    propre = ee.valider_sortie(brut, "ANTECEDENTS : appendicectomie en 1998.")
+    assert propre["antecedents"] == [
+        {"valeur": "Appendicectomie en 1998", "passage": "appendicectomie en 1998"}
+    ]
+
+
+def test_valider_rejette_passage_absent():
+    # Fuite de few-shot : le « passage » n'est pas dans le document → rejeté.
+    brut = {
+        "antecedents": [{"valeur": "Diabète de type 2", "passage": "Diabete de type 2"}]
+    }
+    propre = ee.valider_sortie(brut, "ANTECEDENTS : appendicectomie en 1998.")
+    assert propre["antecedents"] == []
+
+
+def test_valider_rejette_passage_vide():
+    brut = {"antecedents": [{"valeur": "Hypertension", "passage": ""}]}
+    propre = ee.valider_sortie(brut, "ANTECEDENTS : Hypertension.")
+    assert propre["antecedents"] == []
+
+
+def test_valider_rejette_pseudonyme():
+    brut = {
+        "antecedents": [
+            {
+                "valeur": "[TEL_004] - Fax : [TEL_005]",
+                "passage": "[TEL_004] - Fax : [TEL_005]",
+            }
+        ]
+    }
+    propre = ee.valider_sortie(brut, "[TEL_004] - Fax : [TEL_005]")
+    assert propre["antecedents"] == []
+
+
+def test_valider_rejette_entete():
+    brut = {
+        "antecedents": [
+            {
+                "valeur": "Centre Hospitalier",
+                "passage": "CENTRE HOSPITALIER — Sce de Gastro-entérologie",
+            }
+        ]
+    }
+    texte = "CENTRE HOSPITALIER — Sce de Gastro-entérologie\nANTECEDENTS : appendicectomie en 1998."
+    propre = ee.valider_sortie(brut, texte)
+    assert propre["antecedents"] == []
+
+
+def test_valider_rejette_fragment_vide():
+    # « (s) » issu de « Allergie(s) : » sans contenu → rejeté.
+    brut = {"allergies": [{"valeur": "(s)", "passage": "Allergie(s) :"}]}
+    propre = ee.valider_sortie(brut, "Allergie(s) :")
+    assert propre["allergies"] == []
+
+
+def test_valider_reclasse_cure_courte():
+    # Cure d'éradication de 7 jours : vraie info, mauvaise rubrique → points de
+    # vigilance au lieu de traitements_long_cours.
+    brut = {
+        "traitements_long_cours": [
+            {
+                "valeur": "Cure de 7 jours : CLAMOXYL 500",
+                "passage": "Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir",
+            }
+        ]
+    }
+    propre = ee.valider_sortie(
+        brut, "Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir."
+    )
+    assert propre["traitements_long_cours"] == []
+    assert any("CLAMOXYL" in e["valeur"] for e in propre["points_vigilance"])
+
+
+def test_valider_rejette_valeur_biologique():
+    brut = {
+        "points_vigilance": [
+            {
+                "valeur": "Hémoglobine 15,9 g/100mL",
+                "passage": "Hémoglobine 15,9 g/100mL",
+            }
+        ]
+    }
+    propre = ee.valider_sortie(brut, "Hémoglobine 15,9 g/100mL")
+    assert propre["points_vigilance"] == []
+
+
+def test_valider_rejette_classe_sans_produit():
+    # « antibiotique » sans nom de produit → rejeté de traitements_long_cours.
+    brut = {
+        "traitements_long_cours": [
+            {"valeur": "antibiotique", "passage": "antibiotique"}
+        ]
+    }
+    propre = ee.valider_sortie(brut, "antibiotique")
+    assert propre["traitements_long_cours"] == []
+
+
+def test_valider_rejette_fusion_deux_medicaments():
+    # « MAALOX et RANIPLEX » : deux médicaments fusionnés → rejeté.
+    brut = {
+        "traitements_long_cours": [
+            {"valeur": "MAALOX et RANIPLEX", "passage": "MAALOX et RANIPLEX"}
+        ]
+    }
+    propre = ee.valider_sortie(brut, "MAALOX et RANIPLEX")
+    assert propre["traitements_long_cours"] == []
 
 
 def test_run_with_timeout_times_out():
@@ -317,12 +444,19 @@ def test_llm_phase_runs_and_reports(monkeypatch):
     # le rapport atteste les deux étapes, les durées et les corrections.
     ents = [
         ExtractedEntity(
-            "Diabète de type 2", "antecedents", 0.9, "Diabete de type 2", 0, 18,
+            "Diabète de type 2",
+            "antecedents",
+            0.9,
+            "Diabete de type 2",
+            0,
+            18,
             correction_ocr=True,
         )
     ]
     _patch_llm(monkeypatch, ents)
-    out, report = extract_entities_with_report("ANTECEDENTS : Diabete de type 2.", engine="llm")
+    out, report = extract_entities_with_report(
+        "ANTECEDENTS : Diabete de type 2.", engine="llm"
+    )
     assert [e.valeur for e in out] == ["Diabète de type 2"]
     assert report["statut"] == "llm_complet"
     assert report["moteur"] == NLP_ENGINE_LLM
@@ -428,9 +562,7 @@ def test_timeout_does_not_disable_llm_permanently(monkeypatch):
     # le document suivant retente la phase LLM (le modèle reste chargé).
     monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
     monkeypatch.setattr(ee, "_charger_modele", lambda report: "dummy-model")
-    monkeypatch.setattr(
-        ee, "_correction_phase", lambda text, llm: ("corrigé", 0, 1.0)
-    )
+    monkeypatch.setattr(ee, "_correction_phase", lambda text, llm: ("corrigé", 0, 1.0))
     state = {"calls": 0}
 
     def slow_then_ok(text, llm, corrige):  # pragma: no cover - test

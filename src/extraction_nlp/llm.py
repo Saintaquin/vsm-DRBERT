@@ -291,10 +291,12 @@ _LLM_LOCK = threading.Lock()
 LLM_INFERENCE_LOCK = threading.Lock()
 # Taille maximale d'un SEGMENT de texte OCR envoyé au LLM (caractères). Les
 # gros documents sont découpés et traités segment par segment : chaque
-# inférence reste bornée en temps, même sur un CPU lent (3B Q4 sans GPU).
-# 600 caractères ≈ une inférence de ~2-4 min sur CPU lent ; au-delà, le délai
-# par phase risquerait d'être dépassé → repli règles par segment.
-LLM_CHUNK_CHARS = int(os.environ.get("VSM_LLM_CHUNK_CHARS", "600"))
+# inférence reste bornée en temps, même sur un CPU lent sans GPU.
+# 1200 caractères ≈ une fenêtre confortable pour un petit modèle (1,5B) sans
+# dépasser les budgets de temps ; les segments se recouvrent de
+# LLM_CHUNK_OVERLAP caractères pour ne pas couper une information en deux.
+LLM_CHUNK_CHARS = int(os.environ.get("VSM_LLM_CHUNK_CHARS", "1200"))
+LLM_CHUNK_OVERLAP = int(os.environ.get("VSM_LLM_CHUNK_OVERLAP", "150"))
 
 
 def _do_load_model() -> None:
@@ -319,7 +321,9 @@ def _do_load_model() -> None:
         import logging
 
         logging.getLogger("vsm").info(
-            "modèle LLM chargé en %.1f s (%s)", time.perf_counter() - t0, Path(path).name
+            "modèle LLM chargé en %.1f s (%s)",
+            time.perf_counter() - t0,
+            Path(path).name,
         )
     except Exception as exc:  # noqa: BLE001 - rapporté à l'appelant
         with _LLM_LOCK:

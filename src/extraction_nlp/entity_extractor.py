@@ -456,38 +456,46 @@ def extract_entities_free_text_fallback(
 
 # --- Étape 1 : system prompt de CORRECTION OCR -------------------------------
 _LLM_CORRECTION_SYSTEM = (
-    "Tu es un correcteur expert de texte OCR français spécialisé dans les "
-    "documents médicaux (comptes rendus, ordonnances, lettres de sortie, "
-    "résultats de laboratoire, certificats).\n"
-    "Règles STRICTES :\n"
-    "1. Corrige UNIQUEMENT les erreurs typiques de l'OCR, sans rien ajouter, "
-    "retirer, reformuler ni interpréter :\n"
-    "   - accents et cédilles manquants (diabete → diabète, erytheme → "
-    "érythème, colon → côlon, recu → reçu, seche → sèche) ;\n"
-    "   - confusions de caractères (m/rn, i/l/1, 0/O, e/c, n/u) ;\n"
-    "   - majuscules parasites (« TRAITEMENTS : » → « Traitements : ») ;\n"
-    "   - coupures de mots en fin de ligne (hy-\\npertension → hypertension), "
-    "espaces parasites et ponctuation collée.\n"
-    "2. CONSERVE À L'IDENTIQUE : nombres, doses et unités (1000 mg, 5 mL, UI, "
-    "%), dates, codes (CIM-10, ATC), noms de médicaments, valeurs biologiques "
-    "(chiffre + unité) et pseudonymes entre crochets ([PATIENT_001], "
-    "[DATE_NAISSANCE_001]…).\n"
-    "3. Un mot médical illisible ou inconnu est conservé TEL QUEL — jamais de "
-    "devinette clinique, jamais de diagnostic inventé.\n"
-    "4. Reconstruis les paragraphes cassés par l'OCR en conservant l'ordre des "
-    "informations, les titres de rubriques et la structure du document.\n"
-    "5. Réponds UNIQUEMENT en JSON valide : {\"texte_corrige\": \"…\"} — "
-    "jamais de texte hors JSON, jamais de commentaire."
+    "Tu corriges les erreurs d'OCR d'un document médical français. Tu ne fais "
+    "QUE cela.\n"
+    "RÈGLE ABSOLUE : le texte de sortie doit contenir les mêmes lignes, dans le "
+    "même ordre, avec le même sens que le texte d'entrée. Tu ne résumes pas, tu "
+    "ne supprimes rien, tu n'ajoutes rien, tu ne reformules pas.\n"
+    "CORRIGE uniquement :\n"
+    "- accents et cédilles manquants (diabete → diabète, recu → reçu) ;\n"
+    "- confusions de caractères OCR (rn↔m, l↔1↔i, 0↔O, c↔e, u↔n) ;\n"
+    "- mots coupés en fin de ligne (hy-\\npertension → hypertension) ;\n"
+    "- espaces parasites et ponctuation collée ;\n"
+    "- majuscules parasites en milieu de mot (TRAiTEMENT → Traitement).\n"
+    "NE TOUCHE JAMAIS :\n"
+    "- les nombres, doses, unités, pourcentages, dates (1000 mg, 5 mL, "
+    "15,9 g/100mL) ;\n"
+    "- les noms de médicaments, même s'ils semblent mal orthographiés ;\n"
+    "- les codes et identifiants ;\n"
+    "- les pseudonymes entre crochets : [PATIENT_001], [DATE_NAISSANCE_001], "
+    "etc. Recopie-les EXACTEMENT, sans les traduire ni les compléter.\n"
+    "EN CAS DE DOUTE, RECOPIE À L'IDENTIQUE. Un mot illisible reste illisible : "
+    "tu ne devines jamais un mot médical, un médicament ou un diagnostic. Il "
+    "vaut mieux laisser une faute qu'inventer un mot qui change le sens "
+    "clinique.\n"
+    'SORTIE : uniquement du JSON valide, exactement {"texte_corrige": "..."}.\n'
+    "Aucun commentaire, aucun texte avant ou après le JSON."
 )
 
 _LLM_CORRECTION_FEW_SHOT = (
-    "\nExemple :\n"
-    'Texte brut : "ANTECEDENTS : Diabete de type 2. hta.\\n'
-    'ALLERGIES : Penicilline (eruption cutanee).\\n'
-    'TRAITEMENTS : Metformine 1000 mg matin et soir."\n'
-    'Réponse : {"texte_corrige": "ANTÉCÉDENTS : Diabète de type 2. HTA.\\n'
-    'ALLERGIES : Pénicilline (éruption cutanée).\\n'
-    'TRAITEMENTS : Metformine 1000 mg matin et soir."}\n'
+    "\nExemple — le bruit d'en-tête est CONSERVÉ tel quel, on ne devine pas :\n"
+    "Texte brut :\n"
+    '"CENTRE HOSPlTALlER — Sce de Gastro-enterologie\\n'
+    "Tél [TEL_001] — Fox : [TEL_002]\\n"
+    "ANTECEDENTS : appendlcectomie en 1998. tabaglsme actlf.\\n"
+    "TRAITEMENT : OGAST 1 gcl/j en permanence\\n"
+    '_ Reference | Diffuslon"\n'
+    "Réponse :\n"
+    '{"texte_corrige": "CENTRE HOSPITALIER — Sce de Gastro-entérologie\\n'
+    "Tél [TEL_001] — Fax : [TEL_002]\\n"
+    "ANTÉCÉDENTS : appendicectomie en 1998. Tabagisme actif.\\n"
+    "TRAITEMENT : OGAST 1 gcl/j en permanence\\n"
+    '_ Référence | Diffusion"}\n'
 )
 
 
@@ -495,13 +503,17 @@ def build_correction_messages(text: str, max_chars: int = 6000) -> list[dict]:
     """Messages système + utilisateur de la phase de correction OCR
     (fonction pure, testable sans GPU)."""
     return [
-        {"role": "system", "content": _LLM_CORRECTION_SYSTEM + _LLM_CORRECTION_FEW_SHOT},
-        {"role": "user", "content": (
-            "Texte OCR brut (extrait) :\n```\n"
-            + text[:max_chars]
-            + "\n```\n"
-            "Corrige les erreurs OCR et renvoie le JSON {\"texte_corrige\": \"…\"}."
-        )},
+        {
+            "role": "system",
+            "content": _LLM_CORRECTION_SYSTEM + _LLM_CORRECTION_FEW_SHOT,
+        },
+        {
+            "role": "user",
+            "content": (
+                "Texte OCR brut (extrait) :\n```\n" + text[:max_chars] + "\n```\n"
+                'Corrige les erreurs OCR et renvoie le JSON {"texte_corrige": "…"}.'
+            ),
+        },
     ]
 
 
@@ -542,6 +554,7 @@ def correct_ocr_llm(
             messages=build_correction_messages(text),
             response_format={"type": "json_object"},
             temperature=0.0,
+            repeat_penalty=1.0,  # une pénalité de répétition pousse à varier → inventer
             max_tokens=2048,  # la réponse contient le texte corrigé (borné par segment)
         )
     data = _extract_json_llm(out["choices"][0]["message"]["content"])
@@ -550,59 +563,124 @@ def correct_ocr_llm(
 
 
 # --- Étape 2 : system prompt d'EXTRACTION structurée -------------------------
+# Chaque entrée ne contient AUCUN nom de maladie, de médicament ou de facteur
+# de risque susceptible d'être recopié tel quel par un petit modèle (l'ancien
+# « facteurs_risque : tabac, alcool, obésité, sédentarité » a produit à lui
+# seul 4 des 6 hallucinations constatées).
 _LLM_SECTIONS_DEF = {
-    "pathologies_actives": "maladies actuelles, motifs, diagnostics du jour",
-    "antecedents": "maladies passées, interventions chirurgicales, antécédents médicaux/chirurgicaux/familiaux",
-    "allergies": "allergies et intolérances (si « aucune allergie » → laisser [])",
-    "traitements_long_cours": "traitements au long cours, ordonnances (garder le dosage s'il est écrit)",
-    "facteurs_risque": "tabac, alcool, obésité, sédentarité, facteurs de risque cardiovasculaire",
-    "vaccinations": "vaccins et rappels (avec la date si présente)",
-    "points_vigilance": "conclusions, recommandations, alertes cliniques, points d'attention",
+    "pathologies_actives": (
+        "maladie ou problème de santé que le patient a ACTUELLEMENT, "
+        "motif de la consultation, diagnostic posé dans ce document"
+    ),
+    "antecedents": (
+        "maladie passée, opération chirurgicale subie, hospitalisation "
+        "antérieure, ou maladie d'un membre de la famille. "
+        "N'y mets rien qui vienne de l'en-tête ou du pied de page"
+    ),
+    "allergies": (
+        "produit auquel le patient est allergique ou intolérant, nommé "
+        "explicitement dans le texte. Si le texte dit qu'il n'y a pas "
+        "d'allergie, ou si le libellé est présent mais suivi de rien, "
+        "laisse la liste vide"
+    ),
+    "traitements_long_cours": (
+        "médicament que le patient prend au long cours. Il faut un NOM de "
+        "médicament écrit dans le texte, un seul par élément, avec sa "
+        "posologie si elle est écrite. "
+        "N'y mets PAS : une famille de médicaments sans nom de produit ; "
+        "un médicament dont le texte précise qu'il est pris pour une durée "
+        "courte ou en cure ; un médicament cité comme protocole, essai ou "
+        "comparaison sans que le patient le prenne ; un appareil ou un "
+        "examen de laboratoire"
+    ),
+    "facteurs_risque": (
+        "ce que le texte dit du mode de vie du patient : consommations, "
+        "poids, activité physique, expositions professionnelles. "
+        "Uniquement si c'est écrit noir sur blanc dans ce document"
+    ),
+    "vaccinations": (
+        "vaccin ou rappel mentionné dans le texte, avec sa date si elle est écrite"
+    ),
+    "points_vigilance": (
+        "conclusion du médecin, recommandation, surveillance à prévoir, "
+        "alerte clinique, ou traitement en cours de durée courte. "
+        "N'y mets pas les résultats chiffrés d'analyses biologiques"
+    ),
 }
 
 _LLM_SYSTEM = (
-    "Tu es un assistant médical français qui remplit un Volet de Synthèse "
-    "Médicale (VSM) à partir du texte OCR d'un document médical (anonymisé).\n"
-    "Règles STRICTES :\n"
-    "1. Réponds UNIQUEMENT en JSON valide, exactement ce schéma :\n"
+    "Tu remplis un Volet de Synthèse Médicale à partir du texte d'un document "
+    "médical français. Tu recopies des informations du texte : tu n'en ajoutes "
+    "aucune.\n"
+    "SORTIE : uniquement ce JSON, avec ces 7 clés, rien d'autre.\n"
     '{"pathologies_actives": [], "antecedents": [], "allergies": [], '
     '"traitements_long_cours": [], "facteurs_risque": [], "vaccinations": [], '
     '"points_vigilance": []}\n'
-    '2. Chaque élément est {"valeur": str, "passage": str} : « passage » '
-    "est le texte source REPRODUIT À L'IDENTIQUE depuis le texte OCR BRUT "
-    "(orthographe d'origine, erreurs OCR incluses, sans correction) ; "
-    "« valeur » est l'information normalisée : orthographe corrigée (accents "
-    "et erreurs OCR réparés), dosage conservé.\n"
-    "3. N'INVENTE RIEN : si une rubrique est absente du texte, laisse []. "
-    "N'ajoute jamais un diagnostic, un traitement ou une donnée qui n'est pas "
-    "écrite dans le texte.\n"
-    "4. Normalisation : « Diabete de type 2 » → valeur « Diabète de type 2 » ; "
-    "« Metformine 1000 mg matin et soir » → valeur identique (dosage conservé).\n"
-    "5. Contenu des rubriques :\n"
+    'Chaque élément d\'une liste s\'écrit {"valeur": "...", "passage": "..."} :\n'
+    '- "passage" = un extrait COPIÉ MOT POUR MOT du texte fourni, entre 3 et '
+    "200 caractères. Si tu ne peux pas le copier depuis le texte, l'élément "
+    "est interdit.\n"
+    '- "valeur" = la même information, orthographe corrigée, 100 caractères '
+    "maximum, UNE seule information par élément.\n"
+    "INTERDITS — n'écris jamais un élément dans ces cas :\n"
+    '1. Le "passage" ne se trouve pas mot pour mot dans le texte fourni.\n'
+    '2. Le "passage" est vide.\n'
+    '3. La "valeur" contient des crochets [ ] ou un pseudonyme.\n'
+    "4. L'extrait vient d'un en-tête, d'un pied de page, d'une adresse, d'un "
+    "numéro de téléphone ou de fax, d'un numéro de dossier, d'une date de "
+    "prélèvement, d'un nom de service, d'un nom de laboratoire, d'un nom "
+    "d'appareil ou d'automate d'analyse, ou d'une mention administrative.\n"
+    "5. L'extrait est un fragment sans sens clinique : un mot isolé, une "
+    "phrase coupée en plein milieu, un reste de libellé sans contenu "
+    "derrière, ou une suite de caractères illisibles.\n"
+    "6. L'extrait est un paragraphe ou plusieurs phrases : un élément = une "
+    "seule information courte.\n"
+    "7. L'information n'est pas écrite dans le texte fourni. Tu n'utilises "
+    "jamais tes connaissances médicales pour compléter, ni le contenu des "
+    "exemples ci-dessous : ils ne montrent que le FORMAT.\n"
+    "Une liste vide est une bonne réponse. Il vaut mieux rendre [] que "
+    "d'écrire un élément douteux : ce document sera lu par un médecin, une "
+    "erreur coûte plus cher qu'un oubli.\n"
+    "RUBRIQUES :\n"
     + "\n".join(f"   - {k} : {v}" for k, v in _LLM_SECTIONS_DEF.items())
     + "\n"
-    "6. Négations : « pas d'allergie », « aucune allergie » → allergies = [] "
-    "(sauf si une allergie précise est citée).\n"
-    "7. Les pseudonymes ([PATIENT_001], [DATE_NAISSANCE_001]…) ne vont JAMAIS "
-    "dans « valeur » ; ignore-les pour les rubriques.\n"
-    "8. Si le texte est illisible ou vide, renvoie le schéma avec des listes "
-    "vides (jamais de texte libre hors JSON)."
+    "AVANT DE RÉPONDRE : relis chaque élément que tu as écrit. Vérifie que "
+    "son \"passage\" figure bien dans le texte, qu'il ne vient pas d'un "
+    "en-tête et qu'il tient en une seule information. Supprime les autres."
 )
 
 _LLM_FEW_SHOT = (
-    "\nExemple :\n"
-    'Texte : "ANTECEDENTS : Diabete de type 2 depuis 2010. Hypertension.\n'
-    "ALLERGIES : Penicilline (eruption cutanee).\n"
-    'TRAITEMENTS : Metformine 1000 mg matin et soir."\n'
+    "\nExemple 1 — un document sans information exploitable.\n"
+    "Texte :\n"
+    '"CENTRE HOSPITALIER — Sce de Gastro-entérologie\\n'
+    "Tél [TEL_001] — Fax : [TEL_002]\\n"
+    "Dossier n° [DOSSIER_003] — Page 1/2\\n"
+    "Allergie(s) :\\n"
+    "Hémogramme BC-6800 Mindray, Menarini\\n"
+    "Hémoglobine 15,9 g/100mL\\n"
+    'Par contre, comme tu le verras sur"\n'
+    'Réponse : {"pathologies_actives": [], "antecedents": [], "allergies": [], '
+    '"traitements_long_cours": [], "facteurs_risque": [], "vaccinations": [], '
+    '"points_vigilance": []}\n'
+    "\nExemple 2 — un document avec des informations réelles.\n"
+    "Texte :\n"
+    '"ANTECEDENTS : appendicectomie en 1998. Tabagisme actif, 20 cigarettes '
+    "par jour.\\n"
+    "TRAITEMENT DE FOND : OGAST 1 gélule par jour en permanence.\\n"
+    "Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir.\\n"
+    "Allergie(s) : aucune connue.\\n"
+    'CONCLUSION : contrôle endoscopique à prévoir dans deux mois."\n'
     'Réponse : {"pathologies_actives": [], "antecedents": '
-    '[{"valeur": "Diabète de type 2 depuis 2010", '
-    '"passage": "Diabete de type 2 depuis 2010"}, '
-    '{"valeur": "Hypertension artérielle", "passage": "Hypertension"}], '
-    '"allergies": [{"valeur": "Pénicilline", '
-    '"passage": "Penicilline (eruption cutanee)"}], '
-    '"traitements_long_cours": [{"valeur": "Metformine 1000 mg matin et '
-    'soir", "passage": "Metformine 1000 mg matin et soir"}], '
-    '"facteurs_risque": [], "vaccinations": [], "points_vigilance": []}\n'
+    '[{"valeur": "Appendicectomie en 1998", "passage": "appendicectomie en '
+    '1998"}], "allergies": [], "traitements_long_cours": '
+    '[{"valeur": "OGAST 1 gélule par jour", "passage": "OGAST 1 gélule par '
+    'jour en permanence"}], "facteurs_risque": [{"valeur": "Tabagisme actif, '
+    '20 cigarettes par jour", "passage": "Tabagisme actif, 20 cigarettes par '
+    'jour"}], "vaccinations": [], "points_vigilance": '
+    '[{"valeur": "Contrôle endoscopique à prévoir dans deux mois", '
+    '"passage": "contrôle endoscopique à prévoir dans deux mois"}, '
+    '{"valeur": "Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir", '
+    '"passage": "Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir"}]}\n'
 )
 
 
@@ -616,9 +694,7 @@ def build_llm_messages(
     if texte_brut:
         user = (
             "Texte OCR BRUT du document (orthographe d'origine, avec les "
-            "erreurs OCR) :\n```\n"
-            + texte_brut[:max_chars]
-            + "\n```\n"
+            "erreurs OCR) :\n```\n" + texte_brut[:max_chars] + "\n```\n"
             "Texte CORRIGÉ (référence de lecture) :\n```\n"
             + text[:max_chars]
             + "\n```\n"
@@ -635,6 +711,158 @@ def build_llm_messages(
         {"role": "system", "content": _LLM_SYSTEM + _LLM_FEW_SHOT},
         {"role": "user", "content": user},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Garde-fou AVAL : validation de la sortie de l'étape 2 (avant _anchor).
+# Un prompt réduit la probabilité d'erreur ; ce validateur la met à ZÉRO sur
+# les classes qu'il couvre (fuite de few-shot, pseudonymes, en-têtes, bruit
+# OCR, classes sans produit, cures courtes, valeurs biologiques). Le rejet est
+# la valeur par défaut : un élément douteux est supprimé plutôt que présenté
+# à un médecin avec un score de confiance rassurant.
+# ---------------------------------------------------------------------------
+
+# Termes qui trahissent un extrait non clinique (en-tête, labo, administratif).
+_BLOCKLIST = (
+    "diffusion",
+    "référence",
+    "reference",
+    "cedex",
+    "tél",
+    "tel ",
+    "fax",
+    "dossier n",
+    "page ",
+    "expédition",
+    "expedition",
+    "commercial",
+    "menarini",
+    "mindray",
+    "automate",
+    "hémogramme",
+    "hemogramme",
+    "laboratoire",
+    "vidéo-endoscope",
+    "video-endoscope",
+    "olympus",
+    "centre hospitalier",
+    "adresse",
+    "prélèvement",
+    "prelevement",
+)
+# Familles de médicaments : invalides seules, valides avec un nom de produit.
+_CLASSES_SEULES = (
+    "antibiotique",
+    "antibiotiques",
+    "inhibiteur",
+    "inhibiteurs",
+    "anti h",
+    "anti-h",
+    "ipp",
+    "corticoïde",
+    "corticoide",
+)
+_RX_PSEUDO = re.compile(r"\[[A-Z_]+_\d+\]")
+_RX_BIO = re.compile(r"\d+[,.]\d+\s*(g/?100\s*mL|%|g/dL|mmol|UI/L|µ)", re.I)
+_RX_DUREE_COURTE = re.compile(
+    r"\b(cure|pendant|pour)(?:\s+de)?\s+\d+\s*(jours?|semaines?)|"
+    r"\b\d+\s*(jours|semaines)\s+de\s+traitement",
+    re.I,
+)
+_VSM_SECTIONS = tuple(_LLM_SECTIONS_DEF)
+
+
+def _normalise(texte: str) -> str:
+    """Comparaison tolérante aux accents, à la casse et aux espaces."""
+    import unicodedata
+
+    sans_accent = "".join(
+        c
+        for c in unicodedata.normalize("NFD", texte)
+        if unicodedata.category(c) != "Mn"
+    )
+    return re.sub(r"\s+", " ", sans_accent).strip().lower()
+
+
+def valider_element(item: dict, texte_source: str, rubrique: str) -> dict | None:
+    """Renvoie l'élément nettoyé, ou None s'il doit être rejeté.
+
+    Le rejet est la valeur par défaut : un élément douteux est supprimé plutôt
+    que présenté à un médecin avec un score de confiance rassurant.
+    """
+    valeur = (item.get("valeur") or "").strip()
+    passage = (item.get("passage") or "").strip()
+
+    # 1. Ancrage : le passage doit exister mot pour mot dans le document.
+    #    C'est ce test qui rend toute fuite de few-shot impossible.
+    if not passage or _normalise(passage) not in _normalise(texte_source):
+        return None
+
+    # 2. Longueurs : ni fragment, ni paragraphe.
+    if not 3 <= len(valeur) <= 120 or len(passage) > 250:
+        return None
+    if valeur.count(".") >= 2 or len(valeur.split()) > 18:
+        return None
+
+    # 3. Aucun pseudonyme ne doit atteindre le VSM.
+    if _RX_PSEUDO.search(valeur):
+        return None
+
+    # 4. En-tête, coordonnées, matériel de laboratoire.
+    bas = _normalise(valeur)
+    if any(mot in bas for mot in _BLOCKLIST):
+        return None
+
+    # 5. Fragments sans sens : trop peu de lettres, ou libellé vide.
+    lettres = sum(c.isalpha() for c in valeur)
+    if lettres < 3 or lettres / max(len(valeur), 1) < 0.45:
+        return None
+    if bas in ("(s)", "s", "familiaux", "aucun", "aucune", "1 docteur"):
+        return None
+
+    # 6. Règles propres aux traitements.
+    if rubrique == "traitements_long_cours":
+        if bas in _CLASSES_SEULES:  # « antibiotique », « inhibiteur »
+            return None
+        if " et " in bas or "/" in valeur:  # « MAALOX et RANIPLEX »
+            return None
+        if not re.search(r"[A-Za-zÀ-ÿ]{4,}", valeur):
+            return None
+        if _RX_DUREE_COURTE.search(passage):
+            # Cure courte : information vraie, rubrique fausse.
+            return {
+                "valeur": valeur,
+                "passage": passage,
+                "_reclasser": "points_vigilance",
+            }
+
+    # 7. Valeurs biologiques chiffrées : hors périmètre du VSM.
+    if rubrique == "points_vigilance" and _RX_BIO.search(valeur):
+        return None
+
+    return {"valeur": valeur, "passage": passage}
+
+
+def valider_sortie(brut: dict, texte_source: str) -> dict:
+    """Filtre, reclasse et dédoublonne la sortie brute de l'étape 2."""
+    propre = {k: [] for k in _VSM_SECTIONS}
+    vus = set()
+    for rubrique, items in brut.items():
+        if rubrique not in propre or not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ok = valider_element(item, texte_source, rubrique)
+            if ok is None:
+                continue
+            cible = ok.pop("_reclasser", rubrique)
+            cle = (cible, _normalise(ok["valeur"]))
+            if cle in vus:
+                continue
+            vus.add(cle)
+            propre[cible].append(ok)
+    return propre
 
 
 # Confiance des entités LLM (XAI honnête) — proportionnelle à l'ANCRAGE dans
@@ -676,7 +904,9 @@ def _flatten(s: str) -> str:
     import unicodedata
 
     s = "".join(
-        c for c in unicodedata.normalize("NFD", s or "") if unicodedata.category(c) != "Mn"
+        c
+        for c in unicodedata.normalize("NFD", s or "")
+        if unicodedata.category(c) != "Mn"
     )
     s = re.sub(r"[^\w\s]", " ", s)  # ponctuation → espace
     return re.sub(r"\s+", " ", s.lower()).strip()
@@ -759,21 +989,20 @@ def extract_entities_llm(
             ),
             response_format={"type": "json_object"},
             temperature=0.0,
-            max_tokens=1024,  # JSON structuré du segment (court)
+            repeat_penalty=1.0,  # une pénalité de répétition pousse à varier → inventer
+            max_tokens=800,  # JSON structuré du segment (au-delà → paragraphes)
         )
     data = _extract_json_llm(out["choices"][0]["message"]["content"])
+    # Garde-fou AVAL : filtre, reclasse (cures courtes → points_vigilance) et
+    # dédoublonne. Rejette toute « valeur » dont le « passage » n'est pas une
+    # sous-chaîne exacte du texte source — rend la fuite de few-shot impossible.
+    data = valider_sortie(data, text)
     entities = []
     for section, items in data.items():
-        if section not in SECTION_HEADERS:
-            continue
-        if not isinstance(items, list):
-            continue
         for it in items:
-            if not isinstance(it, dict):
-                continue
-            passage = str(it.get("passage", it.get("valeur", "")))
             valeur = str(it.get("valeur", ""))
-            if not valeur:
+            passage = str(it.get("passage", ""))
+            if not valeur or not passage:
                 continue
             idx, length, niveau, passage_effectif = _anchor(text, passage, valeur)
             confiance = (
@@ -798,8 +1027,7 @@ def extract_entities_llm(
                     offset_fin=max(idx, 0) + (length or len(passage_final)),
                     moteur_nlp=NLP_ENGINE_LLM,
                     correction_ocr=(
-                        passage
-                        and passage.strip().lower() != valeur.strip().lower()
+                        passage and passage.strip().lower() != valeur.strip().lower()
                     ),
                 )
             )
@@ -969,16 +1197,18 @@ def _hard_split(text: str, max_chars: int) -> list[str]:
     return out
 
 
-def _chunk_text(text: str, max_chars: int) -> list[str]:
+def _chunk_text(text: str, max_chars: int, overlap: int = 0) -> list[str]:
     """Découpe le texte OCR en segments bornés (≈ max_chars) en respectant les
     paragraphes — un titre de rubrique et ses items restent ensemble. Chaque
     segment est assez court pour qu'une inférence reste rapide, même sur un
-    CPU lent sans GPU."""
+    CPU lent sans GPU. ``overlap`` (caractères) reporte la fin du segment
+    précédent en tête du suivant pour ne pas couper une information en deux
+    (le dédoublonnage aval absorbe les répétitions)."""
     if not text:
         return []
     if len(text) <= max_chars:
         return [text]
-    chunks, buf = [], ""
+    base, buf = [], ""
     for para in re.split(r"\n\s*\n", text):
         para = para.strip("\n")
         if not para:
@@ -990,11 +1220,22 @@ def _chunk_text(text: str, max_chars: int) -> list[str]:
             elif len(buf) + 2 + len(piece) <= max_chars:
                 buf += "\n\n" + piece
             else:
-                chunks.append(buf)
+                base.append(buf)
                 buf = piece
     if buf:
-        chunks.append(buf)
-    return chunks or [text]
+        base.append(buf)
+    if not base:
+        return [text]
+    if overlap <= 0:
+        return base
+    chunks = [base[0]]
+    for prev, cur in zip(base, base[1:]):
+        # recouvrement à la frontière de mot : on reporte la fin du segment
+        # précédent en contexte du suivant.
+        tail = prev[-overlap:]
+        tail = tail.split(" ", 1)[-1] if " " in tail else tail
+        chunks.append((tail + "\n\n" + cur).strip())
+    return chunks
 
 
 def extract_entities_with_report(
@@ -1036,7 +1277,9 @@ def extract_entities_with_report(
     from .llm import llm_attemptable, llm_unavailability_reason
 
     if not llm_attemptable():
-        _log.info("LLM non disponible — moteur de règles : %s", llm_unavailability_reason())
+        _log.info(
+            "LLM non disponible — moteur de règles : %s", llm_unavailability_reason()
+        )
         report["statut"] = "modele_absent"
         report["raison"] = llm_unavailability_reason() or (
             "Modèle LLM local absent — téléchargez-le : "
@@ -1053,9 +1296,9 @@ def extract_entities_with_report(
         return _regles(), report
 
     # Découpage en segments bornés : chaque inférence reste rapide (PC lent).
-    from .llm import LLM_CHUNK_CHARS
+    from .llm import LLM_CHUNK_CHARS, LLM_CHUNK_OVERLAP
 
-    chunks = _chunk_text(text, LLM_CHUNK_CHARS)
+    chunks = _chunk_text(text, LLM_CHUNK_CHARS, LLM_CHUNK_OVERLAP)
     report["nb_chunks"] = len(chunks)
 
     llm_ents: list[ExtractedEntity] = []
@@ -1078,7 +1321,9 @@ def extract_entities_with_report(
         if llm_disabled:
             n_regles += 1
             rules_ents.extend(
-                extract_entities_free_text_fallback(chunk, extract_entities_rules(chunk))
+                extract_entities_free_text_fallback(
+                    chunk, extract_entities_rules(chunk)
+                )
             )
             continue
 
@@ -1108,7 +1353,9 @@ def extract_entities_with_report(
         if llm_disabled:
             n_regles += 1
             rules_ents.extend(
-                extract_entities_free_text_fallback(chunk, extract_entities_rules(chunk))
+                extract_entities_free_text_fallback(
+                    chunk, extract_entities_rules(chunk)
+                )
             )
             continue
 
@@ -1122,14 +1369,18 @@ def extract_entities_with_report(
             else:
                 n_regles += 1
                 rules_ents.extend(
-                    extract_entities_free_text_fallback(chunk, extract_entities_rules(chunk))
+                    extract_entities_free_text_fallback(
+                        chunk, extract_entities_rules(chunk)
+                    )
                 )
         except TimeoutError as exc:  # noqa: BLE001 - machine trop lente
             llm_disabled = True
             n_regles += 1
             reasons.append(f"{exc} (LLM désactivé pour le reste du document)")
             rules_ents.extend(
-                extract_entities_free_text_fallback(chunk, extract_entities_rules(chunk))
+                extract_entities_free_text_fallback(
+                    chunk, extract_entities_rules(chunk)
+                )
             )
             _log.warning(
                 "segment %d/%d — extraction LLM trop lente (%s) ; reste du "
@@ -1142,7 +1393,9 @@ def extract_entities_with_report(
             n_regles += 1
             reasons.append(f"segment {ci + 1} : {exc}")
             rules_ents.extend(
-                extract_entities_free_text_fallback(chunk, extract_entities_rules(chunk))
+                extract_entities_free_text_fallback(
+                    chunk, extract_entities_rules(chunk)
+                )
             )
             _log.warning(
                 "segment %d/%d — extraction LLM échouée (%s) → règles",
@@ -1167,7 +1420,9 @@ def extract_entities_with_report(
                 merged.append(e)
         report["moteur"] = NLP_ENGINE_LLM
         if n_regles == 0:
-            report["statut"] = "llm_complet" if correction_ok else "llm_extraction_seule"
+            report["statut"] = (
+                "llm_complet" if correction_ok else "llm_extraction_seule"
+            )
             if not correction_ok:
                 report["raison"] = "correction OCR non appliquée"
         else:
