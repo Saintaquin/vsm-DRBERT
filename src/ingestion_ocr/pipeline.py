@@ -84,6 +84,7 @@ def run_pipeline(
     preprocess: bool = True,
     dossier_id: str | None = None,
     document_id: str | None = None,
+    on_page=None,
 ) -> dict:
     """Exécute le pipeline complet sur un document.
 
@@ -92,6 +93,9 @@ def run_pipeline(
     pour la cohérence « passage source » : le VSM référence ce document_id
     (source.document_id) ; il doit correspondre à la clé sous laquelle l'OCR
     est stocké (bug « Voir le passage source » corrigé).
+
+    ``on_page`` (optionnel) : callback appelé à chaque page lue (progression
+    dans l'interface sur les gros PDF multi-pages).
 
     anonymize_mode : "off" (déconseillé), "pseudo" (réversible via coffre),
     "strict" (irréversible). Le mapping de pseudonymisation est retourné dans
@@ -120,6 +124,8 @@ def run_pipeline(
 
     try:
         for idx, page_img in pages:
+            if on_page:
+                on_page(idx)
             try:
                 if preprocess:
                     pre = preprocess_image(page_img)

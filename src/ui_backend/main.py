@@ -102,6 +102,7 @@ class ValidateIn(BaseModel):
 # ----------------------------------------------------------------- deps
 def current_session(
     request: Request,
+    response: Response,
     vsm_session: str | None = Cookie(default=None),
     x_csrf_token: str | None = Header(default=None),
 ) -> dict:
@@ -119,13 +120,28 @@ def current_session(
         raise HTTPException(403, "Token CSRF invalide")
     sess["last"] = time.monotonic()
     sess["key"].touch()
+    # Session GLISSANTE : le cookie est rafraîchi à chaque requête. Sans cela,
+    # max_age=15 min est figé à la connexion → le navigateur supprime le cookie
+    # après 15 min même en cas d'activité continue (traitements longs > 15 min
+    # = déconnexion forcée à l'arrivée).
+    response.set_cookie(
+        "vsm_session",
+        vsm_session or "",
+        httponly=True,
+        samesite="strict",
+        max_age=SESSION_TTL,
+    )
     return sess
 
 
 # ----------------------------------------------------------------- auth
 @app.get("/health")
 def health():
-    from src.extraction_nlp.llm import llm_attemptable, llm_ram_warning
+    from src.extraction_nlp.llm import (
+        llm_attemptable,
+        llm_ram_warning,
+        llm_unavailability_reason,
+    )
 
     return {
         "status": "ok",
@@ -133,12 +149,14 @@ def health():
         # Moteurs OCR réellement disponibles sur ce poste — « unlimited »
         # n'apparaît QUE si une carte NVIDIA est détectée (docs/ADR/0005).
         "available_engines": sorted(ENGINES),
-        # LLM : « available » dès que le modèle est présent (il est TENTÉ sur
-        # toutes les machines — exigence). llm_reason = avertissement non
-        # bloquant si la RAM est juste (peut être lent) ; repli règles en cas
-        # de timeout (jamais « infini »). ADR-0009.
+        # LLM : « available » dès que le modèle est présent ET que
+        # llama-cpp-python est importable (il est TENTÉ sur toutes les
+        # machines — exigence). llm_reason = avertissement non bloquant
+        # (RAM juste) ou raison de l'indisponibilité (modèle absent,
+        # bibliothèque manquante) ; repli règles en cas de timeout
+        # (jamais « infini »). ADR-0009.
         "llm_available": llm_attemptable(),
-        "llm_reason": llm_ram_warning(),
+        "llm_reason": llm_ram_warning() or llm_unavailability_reason(),
     }
 
 
@@ -328,6 +346,18 @@ def _run_process_job(
     def step(name: str) -> None:
         job["step"] = name
         job["updated"] = time.time()
+        # Maintient la session et la clé de chiffrement vivantes pendant les
+        # traitements longs (OCR + LLM sur gros documents) : sans cela, la clé
+        # expire au bout de 15 min et l'écriture finale échoue (job en erreur),
+        # et l'utilisateur est déconnecté à son retour.
+        try:
+            sess["key"].touch()
+        except Exception:  # noqa: BLE001 - clé déjà fermée : rien à faire
+            pass
+        sess["last"] = time.monotonic()
+
+    def step_page(idx: int) -> None:
+        step(f"OCR (lecture du document) — page {idx}")
 
     try:
         content = store.load_document(document_id)
@@ -346,6 +376,7 @@ def _run_process_job(
                 # Cohérence « passage source » : le VSM référence CE document_id
                 # (source.document_id) ; il doit égaler la clé de stockage OCR.
                 document_id=document_id,
+                on_page=step_page,
             )
         finally:
             os.unlink(tmp_path)
@@ -357,10 +388,26 @@ def _run_process_job(
                 document_id, mapping
             )
 
-        step("extraction et assemblage du VSM")
-        nlp_json = nlp_pipeline(ocr_json, nlp_engine=body.nlp_engine)
+        # Phase LLM locale par document (exigence) : correction OCR + extraction
+        # structurée, découpées en segments pour les gros documents. Le repli
+        # règles éventuel est tracé dans provenance.nlp et rapporté au médecin.
+        from src.extraction_nlp.llm import llm_attemptable
+
+        use_llm = body.nlp_engine == "llm" and llm_attemptable()
+
+        def _prog(done: int, total: int) -> None:
+            step(f"Phase LLM locale : segment {done}/{total}")
+
+        if use_llm:
+            step("Phase LLM locale : correction OCR + extraction")
+        else:
+            step("Extraction NLP (moteur de règles)")
+        nlp_json = nlp_pipeline(
+            ocr_json, nlp_engine=body.nlp_engine, progress=_prog if use_llm else None
+        )
         from src.vsm_generation.vsm_builder import build_vsm
 
+        step("Assemblage du VSM")
         vsm = build_vsm(nlp_json)
         vsm_id = f"vsm_{uuid.uuid4().hex[:12]}"
         vsm["document_id"] = document_id
@@ -390,6 +437,9 @@ def _run_process_job(
             "vsm": vsm,
             "processing_report": ocr_json["processing_report"],
             "pii_detected_count": ocr_json["pii_detected_count"],
+            # Rapport de la phase NLP/LLM (moteur réel, statut, raison du
+            # repli éventuel, corrections OCR, durées) — affiché à l'UI.
+            "nlp_report": nlp_json.get("provenance", {}).get("nlp", {}),
         }
         job["status"] = "done"
         step("terminé")
@@ -511,6 +561,92 @@ def validate_vsm(vsm_id: str, body: ValidateIn, sess: dict = Depends(current_ses
     )
     _log.info("vsm %s → statut %s", vsm_id, body.statut)
     return vsm
+
+
+@app.post("/vsm/{vsm_id}/llm-assist")
+def llm_assist(vsm_id: str, sess: dict = Depends(current_session)):
+    """Relance la phase LLM locale (correction OCR + extraction) sur le texte
+    OCR stocké et améliore les champs encore « À valider ».
+
+    Le médecin garde la main : seuls les champs douteux sont mis à jour, le
+    VSM reste au statut « à valider » et doit être relu puis enregistré.
+    Retourne le VSM mis à jour + le rapport de la phase LLM."""
+    from rapidfuzz import fuzz
+
+    from src.extraction_nlp.entity_extractor import extract_entities_with_report
+    from src.extraction_nlp.llm import llm_attemptable
+
+    if not llm_attemptable():
+        raise HTTPException(
+            409,
+            "Modèle LLM local absent — téléchargez-le : "
+            "python -m src.extraction_nlp.llm",
+        )
+    store: EncryptedStore = sess["store"]
+    try:
+        vsm = store.load_vsm(vsm_id)
+        ocr = store.load_ocr_result(vsm.get("document_id", ""))
+    except KeyError:
+        raise HTTPException(404, "VSM ou texte OCR introuvable") from None
+
+    ents, report = extract_entities_with_report(ocr.get("text", ""), engine="llm")
+    if report["statut"] not in ("llm_complet", "llm_extraction_seule"):
+        raise HTTPException(
+            409,
+            "Phase LLM indisponible pour l'instant : "
+            f"{report.get('raison') or report['statut']}",
+        )
+
+    # N'améliore QUE les champs marqués « À valider » ; chaque candidat LLM
+    # n'est utilisé qu'une fois et seulement s'il correspond au champ actuel.
+    updated = 0
+    used: set[int] = set()
+    for section, items in vsm.get("sections", {}).items():
+        if not isinstance(items, list):
+            continue
+        cands = [i for i, e in enumerate(ents) if e.section == section]
+        for it in items:
+            if not isinstance(it, dict) or not it.get("a_valider"):
+                continue
+            best_i, best_score = None, 0.0
+            for i in cands:
+                if i in used:
+                    continue
+                score = fuzz.token_set_ratio(str(it.get("valeur", "")), ents[i].valeur)
+                if score > best_score:
+                    best_i, best_score = i, score
+            if best_i is None or best_score < 60:
+                continue
+            e = ents[best_i]
+            used.add(best_i)
+            it["valeur"] = e.valeur
+            it["confiance"] = e.confiance
+            it["a_valider"] = e.confiance < 0.7
+            it["moteur_nlp"] = e.moteur_nlp
+            it["correction_ocr"] = e.correction_ocr
+            it["source"] = {
+                **it.get("source", {}),
+                "passage": e.passage,
+                "offset_debut": e.offset_debut,
+                "offset_fin": e.offset_fin,
+            }
+            updated += 1
+
+    prov = vsm.setdefault("provenance", {})
+    prov["moteur_nlp"] = report["moteur"]
+    prov["nlp"] = {**prov.get("nlp", {}), **report, "assist_llm": True}
+    store.store_vsm(vsm_id, vsm.get("document_id", vsm_id), vsm)
+    store.append_audit(
+        sess["user"]["username"],
+        "llm_assist",
+        {
+            "vsm_id": vsm_id,
+            "champs_mis_a_jour": updated,
+            "statut_nlp": report["statut"],
+        },
+    )
+    _log.info("vsm %s assisté par le LLM : %d champ(s) mis à jour", vsm_id, updated)
+    return {"vsm": vsm, "champs_mis_a_jour": updated, "nlp_report": report}
 
 
 @app.get("/vsm/{vsm_id}/export")
@@ -667,6 +803,13 @@ def main():
     # Journal applicatif structuré, local, sans PII (outputs/AUDIT_FASTAPI_LOGS.md)
     setup_logging(APP_DIR)
     _log.info("VSM-OCR démarré sur 127.0.0.1:8741 (100%% local)")
+
+    # Préchargement du modèle LLM local en arrière-plan : le premier document
+    # ne paie pas le coût de chargement du GGUF (minutes sur PC lent).
+    # preload_llm() ne lève jamais : il démarre un thread best-effort.
+    from src.extraction_nlp.llm import preload_llm
+
+    preload_llm()
 
     # 127.0.0.1 STRICTEMENT — jamais 0.0.0.0 (cf. garde-fous projet)
     uvicorn.run(app, host="127.0.0.1", port=8741, log_level="warning")

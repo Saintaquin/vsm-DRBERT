@@ -1,5 +1,8 @@
 # VSM-OCR — dépendances Python (toutes locales, aucune ne fait d'appel cloud)
 # Python 3.12
+# Roues CPU précompilées de llama-cpp-python (Windows/Linux, toutes versions
+# Python) — PyPI n'héberge que le code source de ce paquet.
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 fastapi>=0.110
 uvicorn>=0.29
 pydantic>=2.6
@@ -14,11 +17,12 @@ pillow>=10.2
 numpy>=1.26
 reportlab>=4.1                 # rendu PDF du VSM
 jiwer>=3.0                     # CER/WER pour le benchmark
+llama-cpp-python>=0.2          # moteur NLP LLM local OBLIGATOIRE (phase LLM
+                               # par document : correction OCR + extraction ;
+                               # roue CPU précompilée via l'index ci-dessus —
+                               # aucun appel cloud, jamais de compilation)
 
 # --- optionnels (adaptateurs, non requis pour le fonctionnement nominal) ---
-# llama-cpp-python>=0.2      # moteur NLP LLM local (modèle Apache 2.0 dans
-#                            # ~/.cache/vsm-ocr/ — voir docs/ADR/0004 ; jamais
-#                            # committé ; téléchargement à l'installation)
 # torch + transformers       # (1) NER DrBERT-MedicalNER-FR (licence « style
 #                            #     OpenRAIL », usage commercial permis — docs/ADR/0010) ;
 #                            # (2) moteur OCR « unlimited » (baidu, MIT — docs/ADR/0005).

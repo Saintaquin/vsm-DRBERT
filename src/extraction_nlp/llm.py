@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -172,6 +174,38 @@ def model_available() -> bool:
     return path.exists() and path.stat().st_size > 1_000_000  # ≥ ~1 Mo (en-tête)
 
 
+_LLAMA_CPP_CACHE: bool | None = None
+
+
+def _llama_cpp_available() -> bool:
+    """llama-cpp-python est-il importable ? (résultat mis en cache)."""
+    global _LLAMA_CPP_CACHE
+    if _LLAMA_CPP_CACHE is None:
+        try:
+            import llama_cpp  # noqa: F401
+
+            _LLAMA_CPP_CACHE = True
+        except Exception:  # noqa: BLE001 - ImportError ou wheel cassé
+            _LLAMA_CPP_CACHE = False
+    return _LLAMA_CPP_CACHE
+
+
+def llm_unavailability_reason() -> str:
+    """Raison POURQUOI le LLM n'est pas utilisable (affichée à l'UI et dans
+    provenance.nlp) — sinon chaîne vide."""
+    if model_available() and not _llama_cpp_available():
+        return (
+            "Le modèle GGUF est présent mais la bibliothèque "
+            "llama-cpp-python n'est pas installée — pip install llama-cpp-python"
+        )
+    if not model_available():
+        return (
+            "Modèle LLM local absent — téléchargez-le : "
+            "python -m src.extraction_nlp.llm"
+        )
+    return ""
+
+
 def available_ram_gb() -> float:
     """RAM DISPONIBLE (Go) — Windows (GlobalMemoryStatusEx) / POSIX MemAvailable.
     Diffère de detect_ram_gb() (RAM totale) : c'est la mémoire réellement
@@ -209,17 +243,161 @@ def available_ram_gb() -> float:
 # sert uniquement à produire un AVERTISSEMENT « le LLM risque d'être lent » —
 # ne BLOQUE PLUS le LLM (exigence : LLM sur toutes les machines, même lentes).
 _LLM_RAM_MARGIN_GB = 1.5
-# Délai maximal d'une inférence LLM en secondes (configurable) : au-delà, repli
-# automatique sur les règles (jamais « infini »). Sur les machines lentes, le
-# LLM est quand même TENTÉ ; s'il dépasse ce délai, on bascule sur les règles.
+
+# ---------------------------------------------------------------------------
+# Budgets temporels SÉPARÉS (correction du « LLM jamais effectif sur PC lent ») :
+# l'ancien budget unique (chargement + inférence en 300 s) était dépassé par le
+# SEUL chargement du GGUF sur les machines lentes → repli règles définitif.
+# Désormais : le chargement n'a lieu qu'UNE FOIS par processus (singleton) avec
+# son propre budget ; la correction OCR et l'extraction ont chacune le leur.
+# Un dépassement ne désactive JAMAIS le LLM pour la suite de la session.
+# ---------------------------------------------------------------------------
+# Délai maximal d'une inférence LLM en secondes (configurable) — historique.
 LLM_INFERENCE_TIMEOUT_SEC = int(os.environ.get("VSM_LLM_TIMEOUT_SEC", "300"))
+# Budget de CHARGEMENT du modèle (premier document uniquement, singleton ensuite).
+LLM_LOAD_TIMEOUT_SEC = int(os.environ.get("VSM_LLM_LOAD_TIMEOUT_SEC", "900"))
+# Budget de la phase « correction OCR » (1er appel LLM par document).
+LLM_CORRECTION_TIMEOUT_SEC = int(
+    os.environ.get("VSM_LLM_CORRECTION_TIMEOUT_SEC", "300")
+)
+# Budget de la phase « extraction structurée VSM » (2e appel LLM par document).
+# Légèrement supérieur : l'extraction reçoit brut + corrigé (2× le texte).
+LLM_EXTRACTION_TIMEOUT_SEC = int(
+    os.environ.get("VSM_LLM_EXTRACTION_TIMEOUT_SEC", "360")
+)
+
+# ---------------------------------------------------------------------------
+# Singleton du modèle : le GGUF (≈ 2 Go) est chargé UNE SEULE FOIS par
+# processus, puis réutilisé par tous les documents. Le chargement est
+# déclenché à la première demande ET préchargé au démarrage du backend
+# (preload_llm) : le premier document ne paie plus le coût de chargement.
+# ---------------------------------------------------------------------------
+
+# Taille du contexte (configurable) : 8192 par défaut — l'extraction reçoit le
+# texte brut ET le texte corrigé (≈ 12 000 caractères au total).
+LLM_N_CTX = int(os.environ.get("VSM_LLM_N_CTX", "8192"))
+
+_LLM_STATE: dict = {
+    "model": None,  # instance llama_cpp.Llama partagée (ou None)
+    "name": "",  # nom du fichier modèle (rapport XAI)
+    "loader": None,  # thread de chargement en cours (ou None)
+    "loaded": threading.Event(),  # le chargement est terminé (succès ou échec)
+    "load_error": None,  # exception levée pendant le chargement
+}
+_LLM_LOCK = threading.Lock()
+# Sérialise les appels d'inférence sur le modèle partagé (llama-cpp n'est pas
+# thread-safe) : évite qu'une inférence chronométrée partie en arrière-plan
+# entre en concurrence avec la suivante.
+LLM_INFERENCE_LOCK = threading.Lock()
+# Taille maximale d'un SEGMENT de texte OCR envoyé au LLM (caractères). Les
+# gros documents sont découpés et traités segment par segment : chaque
+# inférence reste bornée en temps, même sur un CPU lent (3B Q4 sans GPU).
+# 600 caractères ≈ une inférence de ~2-4 min sur CPU lent ; au-delà, le délai
+# par phase risquerait d'être dépassé → repli règles par segment.
+LLM_CHUNK_CHARS = int(os.environ.get("VSM_LLM_CHUNK_CHARS", "600"))
+
+
+def _do_load_model() -> None:
+    """Charge le GGUF (thread dédié) — une seule fois par processus."""
+    try:
+        from llama_cpp import Llama
+
+        path = str(default_model_path())
+        t0 = time.perf_counter()
+        # Réglages CPU conservateurs (machines lentes sans GPU) : threads =
+        # cœurs, batch 512 (meilleur débit CPU que le défaut).
+        model = Llama(
+            model_path=path,
+            n_ctx=LLM_N_CTX,
+            n_threads=os.cpu_count() or 4,
+            n_batch=1024,  # évaluation du prompt par lots plus grands (plus rapide)
+            verbose=False,
+        )
+        with _LLM_LOCK:
+            _LLM_STATE["model"] = model
+            _LLM_STATE["name"] = Path(path).name
+        import logging
+
+        logging.getLogger("vsm").info(
+            "modèle LLM chargé en %.1f s (%s)", time.perf_counter() - t0, Path(path).name
+        )
+    except Exception as exc:  # noqa: BLE001 - rapporté à l'appelant
+        with _LLM_LOCK:
+            _LLM_STATE["load_error"] = exc
+    finally:
+        _LLM_STATE["loaded"].set()
+
+
+def get_llm_instance(wait_timeout: float | None = None):
+    """Instance partagée du modèle (chargée une seule fois).
+
+    - Déclenche le chargement au premier appel s'il n'est pas en cours.
+    - Attend au plus ``wait_timeout`` s (défaut : LLM_LOAD_TIMEOUT_SEC).
+    - Lève TimeoutError si le chargement dépasse le délai : il CONTINUE en
+      arrière-plan et sera disponible à l'appel suivant (document suivant) —
+      jamais d'échec définitif de session.
+    - Lève l'erreur de chargement (fichier invalide, llama_cpp absent…) pour
+      que l'appelant bascule visiblement sur les règles.
+    """
+    if wait_timeout is None:
+        wait_timeout = LLM_LOAD_TIMEOUT_SEC
+    with _LLM_LOCK:
+        if _LLM_STATE["model"] is not None:
+            return _LLM_STATE["model"]
+        if _LLM_STATE["loader"] is None:
+            _LLM_STATE["loaded"].clear()
+            _LLM_STATE["load_error"] = None
+            _LLM_STATE["loader"] = threading.Thread(
+                target=_do_load_model, daemon=True, name="vsm-llm-load"
+            )
+            _LLM_STATE["loader"].start()
+    if not _LLM_STATE["loaded"].wait(timeout=wait_timeout):
+        raise TimeoutError(
+            "chargement du modèle LLM toujours en cours (dépasse le délai) — "
+            "il reste disponible pour le document suivant"
+        )
+    with _LLM_LOCK:
+        if _LLM_STATE["load_error"] is not None:
+            err = _LLM_STATE["load_error"]
+            _LLM_STATE["loader"] = None  # autorise une nouvelle tentative
+            raise err
+        model = _LLM_STATE["model"]
+        if model is None:
+            raise TimeoutError("chargement du modèle LLM abandonné")
+        return model
+
+
+def llm_model_name() -> str:
+    """Nom du modèle pour les rapports (fichier GGUF ou clé du catalogue)."""
+    if _LLM_STATE["name"]:
+        return _LLM_STATE["name"]
+    env = os.environ.get("VSM_LLM_MODEL")
+    if env:
+        return env
+    return default_model_path().name
+
+
+def preload_llm() -> None:
+    """Préchargement en arrière-plan au démarrage du backend : le coût de
+    chargement (~minutes sur PC lent) est payé AVANT le premier document."""
+    if not llm_attemptable():
+        return
+
+    def _preload():  # pragma: no cover - nécessite llama.cpp + GGUF
+        try:
+            get_llm_instance()
+        except Exception:  # noqa: BLE001 - le préchargement est best-effort
+            pass
+
+    threading.Thread(target=_preload, daemon=True, name="vsm-llm-preload").start()
 
 
 def llm_attemptable() -> bool:
-    """Le LLM doit-il être TENTÉ ? Oui dès que le modèle est présent.
-    (Exigence : LLM sur toutes les machines, même lentes — la RAM ne bloque
-    plus ; un timeout + repli règles préviennent le blocage infini.)"""
-    return model_available()
+    """Le LLM doit-il être TENTÉ ? Oui dès que le modèle EST présent ET que
+    llama-cpp-python est importable. (Exigence : LLM sur toutes les machines,
+    même lentes — la RAM ne bloque plus ; un timeout + repli règles préviennent
+    le blocage infini.)"""
+    return model_available() and _llama_cpp_available()
 
 
 def llm_ram_warning() -> str:

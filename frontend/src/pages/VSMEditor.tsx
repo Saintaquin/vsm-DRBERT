@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, ChampTrace, User, Vsm, api } from "../api";
+import { ApiError, ChampTrace, NlpReport, User, Vsm, api } from "../api";
 import { announce } from "../accessibility";
 import { Alerte, Button, Card, CardBody, CardHeader, ConfianceBadge, Spinner, StatutBadge } from "../components/ui";
 
@@ -17,6 +17,32 @@ const SECTION_ORDER: [string, string][] = [
 ];
 
 const isList = (v: unknown): v is ChampTrace[] => Array.isArray(v);
+
+/** Ligne d'information sur la phase NLP/LLM locale (XAI) : moteur réellement
+ *  utilisé, corrections OCR, durées, raison du repli éventuel. */
+function NlpInfo({ report }: { report?: NlpReport }) {
+  if (!report) return null;
+  const llm = report.statut.startsWith("llm");
+  const partiel = report.statut === "llm_partiel";
+  const detail = llm
+    ? `LLM local${report.modele ? ` ${report.modele}` : ""} · ${report.nb_corrections_ocr ?? 0} correction(s) OCR` +
+      (report.duree_correction_sec != null ? ` en ${report.duree_correction_sec.toFixed(0)} s` : "") +
+      (report.duree_extraction_sec != null ? ` + extraction ${report.duree_extraction_sec.toFixed(0)} s` : "") +
+      (report.nb_chunks && report.nb_chunks > 1 ? ` · ${report.nb_chunks} segments` : "") +
+      (partiel && report.raison ? ` — ${report.raison}` : "")
+    : report.statut === "modele_absent"
+      ? "modèle LLM local non téléchargé — extraction par règles (python -m src.extraction_nlp.llm)"
+      : `repli moteur de règles${report.raison ? ` — ${report.raison}` : ""}`;
+  return (
+    <p className="text-xs text-sourdine">
+      <span className={llm ? (partiel ? "font-semibold text-ambre" : "font-semibold text-mousse") : "font-semibold text-ambre"}>
+        {partiel ? "◐ Phase LLM locale partielle" : llm ? "✓ Phase LLM locale effectuée" : "⚠ Phase LLM locale non effectuée"}
+      </span>{" "}
+      — {detail}
+      {report.assist_llm && " · relecture assistée par le LLM"}
+    </p>
+  );
+}
 
 interface Props {
   vsmId: string;
@@ -83,6 +109,32 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
     }
   }
 
+  // Relance la phase LLM locale sur les champs encore « À valider » :
+  // correction OCR + extraction, appliquée uniquement aux champs douteux.
+  // Le médecin relit ensuite et enregistre (il garde la main).
+  const [llmBusy, setLlmBusy] = useState(false);
+  async function handleLlmAssist() {
+    if (!vsm) return;
+    setLlmBusy(true);
+    setError(null);
+    try {
+      const res = await api.llmAssist(vsmId);
+      setVsm(res.vsm);
+      setDirty(true);
+      const msg = res.champs_mis_a_jour > 0
+        ? `LLM local : ${res.champs_mis_a_jour} champ(s) corrigé(s) — relisez puis enregistrez.`
+        : "LLM local : aucun champ douteux à corriger.";
+      announce(msg);
+      setNotice(msg);
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : "Assistance LLM impossible";
+      announce(`Erreur : ${msg}`);
+      setError(msg);
+    } finally {
+      setLlmBusy(false);
+    }
+  }
+
   // Raccourcis clavier : Enter = valider le champ focalisé, Ctrl+Enter = enregistrer.
   // (Tab/Shift+Tab = navigation native ; Ctrl+K géré au niveau App.)
   useEffect(() => {
@@ -118,6 +170,7 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
         />
         <CardBody className="space-y-3">
           <Alerte kind="info">{vsm.avertissement}</Alerte>
+          <NlpInfo report={vsm.provenance?.nlp} />
           {vsm.signature && (
             <p className="text-sm text-mousse">
               Signé par <strong>{vsm.signature.signe_par}</strong> le{" "}
@@ -129,6 +182,11 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
             <Button onClick={() => save("valide")} disabled={busy || signed}>
               Enregistrer {dirty && "•"} <kbd className="rounded bg-white/20 px-1 text-xs">Ctrl+↵</kbd>
             </Button>
+            {vsm.statut === "a_valider" && !signed && (
+              <Button variant="secondary" disabled={busy || llmBusy} onClick={handleLlmAssist}>
+                {llmBusy ? "Phase LLM en cours…" : "Relire par le LLM local"}
+              </Button>
+            )}
             {user.role === "medecin" && (
               <Button variant="secondary" disabled={busy || signed}
                 onClick={() => { if (window.confirm("Signer et finaliser ce VSM ? Le document sera scellé (empreinte SHA-256) et ne pourra plus être modifié sans nouvelle signature.")) void save("signe"); }}>
@@ -189,6 +247,9 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
                             <span className="font-mono">
                               {item.code_normalise.systeme} {item.code_normalise.code} · {item.code_normalise.libelle}
                             </span>
+                          )}
+                          {item.correction_ocr && (
+                            <span className="font-medium text-sarcelle">corrigé par le LLM</span>
                           )}
                           {item.moteurs && <span>moteurs : {item.moteurs.ocr ?? "?"} / {item.moteurs.nlp ?? "?"}</span>}
                           {item.source?.passage && (

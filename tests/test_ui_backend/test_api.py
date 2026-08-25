@@ -80,6 +80,17 @@ def test_csrf_wrong_token_rejected(client):
     assert r.status_code == 403
 
 
+def test_session_cookie_is_sliding(client):
+    # Session GLISSANTE : chaque requête authentifiée re-émet le cookie avec un
+    # max_age rafraîchi — sinon un traitement > 15 min (gros document + LLM)
+    # déconnecterait l'utilisateur à son retour (le cookie expirait 15 min
+    # après la connexion, indépendamment de l'activité).
+    _login(client)
+    r = client.get("/documents")
+    assert r.status_code == 200
+    assert "vsm_session=" in r.headers.get("set-cookie", "")
+
+
 def test_full_flow(client, tmp_path):
     headers = _login(client)
     from pathlib import Path
@@ -432,3 +443,113 @@ def test_upload_limit_configurable(client_small_limit):
         files={"file": ("small.png", small, "image/png")},
     )
     assert r2.status_code == 200
+
+
+def _seed_assist_vsm(store, vsm_id="vsm_assist", doc_id="doc_assist"):
+    """VSM avec un champ « À valider » + texte OCR stocké (sans OCR réel)."""
+    store.store_ocr_result(
+        doc_id, {"document_id": doc_id, "text": "ANTECEDENTS : Diabete de type 2."}
+    )
+    vsm = {
+        "schema_version": "1.1.0",
+        "document_id": doc_id,
+        "date_generation": "2026-08-01T10:00:00+00:00",
+        "statut": "a_valider",
+        "patient": {},
+        "medecin_traitant": {},
+        "sections": {
+            "pathologies_actives": [],
+            "antecedents": [
+                {
+                    "valeur": "Diabete de type 2",
+                    "confiance": 0.6,
+                    "a_valider": True,
+                    "source": {"passage": "Diabete de type 2"},
+                },
+                {
+                    "valeur": "Hypertension",
+                    "confiance": 0.95,
+                    "a_valider": False,
+                    "source": {"passage": "Hypertension"},
+                },
+            ],
+            "allergies": [],
+            "traitements_long_cours": [],
+            "facteurs_risque": [],
+            "vaccinations": [],
+            "points_vigilance": [],
+        },
+        "provenance": {"moteur_nlp": "rules-fr-v1"},
+    }
+    store.store_vsm(vsm_id, doc_id, vsm)
+    return vsm_id
+
+
+def test_llm_assist_updates_fields_to_validate(client, monkeypatch):
+    # « Relire par le LLM local » : améliore UNIQUEMENT les champs « À valider »
+    # (phase LLM simulée via monkeypatch — pas de GPU en CI).
+    headers = _login(client)
+    import src.extraction_nlp.entity_extractor as ee
+    import src.extraction_nlp.llm as llm_mod
+    import src.ui_backend.main as m
+    from src.extraction_nlp.entity_extractor import ExtractedEntity
+
+    sess = m._sessions[client.cookies.get("vsm_session")]
+    vsm_id = _seed_assist_vsm(sess["store"])
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
+
+    def fake_extract(text, engine="rules"):
+        return (
+            [
+                ExtractedEntity(
+                    "Diabète de type 2",
+                    "antecedents",
+                    0.9,
+                    "Diabete de type 2",
+                    0,
+                    18,
+                    correction_ocr=True,
+                )
+            ],
+            {
+                "moteur": "llm-local-q4",
+                "statut": "llm_complet",
+                "raison": None,
+                "phase_correction_ocr": True,
+                "nb_corrections_ocr": 1,
+                "duree_correction_sec": 1.0,
+                "duree_extraction_sec": 1.0,
+                "modele": "test.gguf",
+            },
+        )
+
+    monkeypatch.setattr(ee, "extract_entities_with_report", fake_extract)
+    r = client.post(f"/vsm/{vsm_id}/llm-assist", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["champs_mis_a_jour"] == 1
+    champs = body["vsm"]["sections"]["antecedents"]
+    assert champs[0]["valeur"] == "Diabète de type 2"
+    assert champs[0]["confiance"] == 0.9
+    assert champs[0]["a_valider"] is False
+    assert champs[0]["correction_ocr"] is True
+    # le champ déjà fiable n'est PAS touché
+    assert champs[1]["valeur"] == "Hypertension" and champs[1]["confiance"] == 0.95
+    assert body["vsm"]["provenance"]["nlp"]["statut"] == "llm_complet"
+    # événement d'audit tracé
+    audit = sess["store"].read_audit(10)
+    assert any(e["event"] == "llm_assist" for e in audit)
+
+
+def test_llm_assist_requires_model(client, monkeypatch):
+    # Sans modèle LLM local → 409 explicite (jamais d'appel cloud).
+    headers = _login(client)
+    import src.extraction_nlp.llm as llm_mod
+    import src.ui_backend.main as m
+
+    sess = m._sessions[client.cookies.get("vsm_session")]
+    vsm_id = _seed_assist_vsm(sess["store"])
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: False)
+    r = client.post(f"/vsm/{vsm_id}/llm-assist", headers=headers)
+    assert r.status_code == 409
+    assert "python -m" in r.json()["detail"]

@@ -6,12 +6,10 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from .entity_extractor import NLP_ENGINE_LLM, NLP_ENGINE_RULES, extract_entities
+from .entity_extractor import NLP_ENGINE_RULES, extract_entities_with_report
 from .normalizer import normalize_diagnosis, normalize_medication
 
 SCHEMA_VERSION = "1.1.0"
-# Noms canoniques des moteurs pour la provenance (XAI)
-_MOTEUR_NOM = {"rules": NLP_ENGINE_RULES, "llm": NLP_ENGINE_LLM}
 SECTIONS = (
     "pathologies_actives",
     "antecedents",
@@ -86,14 +84,17 @@ def _fill_identity(vsm: dict, text: str, ocr_json: dict) -> None:
 
 
 def run_pipeline(
-    ocr_json: dict, nlp_engine: str = "rules", confidence_threshold: float = 0.7
+    ocr_json: dict,
+    nlp_engine: str = "rules",
+    confidence_threshold: float = 0.7,
+    progress=None,
 ) -> dict:
     text = ocr_json.get("text", "")
-    entities = extract_entities(text, engine=nlp_engine)
-    # XAI : tracer le moteur RÉELLEMENT utilisé (repli « llm » → règles inclus)
-    moteur_effectif = (
-        entities[0].moteur_nlp if entities else _MOTEUR_NOM.get(nlp_engine, nlp_engine)
+    entities, nlp_report = extract_entities_with_report(
+        text, engine=nlp_engine, progress=progress
     )
+    # XAI : tracer le moteur RÉELLEMENT utilisé (repli « llm » → règles inclus)
+    moteur_effectif = nlp_report["moteur"]
 
     sections: dict[str, list] = {s: [] for s in SECTIONS}
     for ent in entities:
@@ -143,6 +144,9 @@ def run_pipeline(
                 }
             ],
             "moteur_nlp": moteur_effectif,
+            # Rapport complet de la phase NLP/LLM (statut, raisons, durées,
+            # corrections OCR) — affiché au médecin (XAI).
+            "nlp": nlp_report,
             "pipeline_version": ocr_json.get("pipeline_version", ""),
         },
     }

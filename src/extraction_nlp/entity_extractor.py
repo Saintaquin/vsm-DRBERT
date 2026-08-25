@@ -22,7 +22,9 @@ from dataclasses import asdict, dataclass
 _log = logging.getLogger("vsm")
 
 NLP_ENGINE_RULES = "rules-fr-v1"
-NLP_ENGINE_LLM = "llama-3.1-8b-q4-local"
+# Nom canonique du moteur LLM local (le modèle exact dépend du poste :
+# Qwen 2.5 3B par défaut — voir src/extraction_nlp/llm.py, ADR-0004).
+NLP_ENGINE_LLM = "llm-local-q4"
 
 # Rubriques → en-têtes possibles dans les documents français
 SECTION_HEADERS = {
@@ -62,6 +64,9 @@ class ExtractedEntity:
     offset_debut: int
     offset_fin: int
     moteur_nlp: str = NLP_ENGINE_RULES
+    # True si la « valeur » normalisée diffère du « passage » source brut
+    # (correction OCR par le LLM) — affiché au médecin (XAI).
+    correction_ocr: bool = False
 
     def to_champ(self) -> dict:
         d = asdict(self)
@@ -74,6 +79,7 @@ class ExtractedEntity:
                 "offset_fin": d["offset_fin"],
             },
             "moteur_nlp": d["moteur_nlp"],
+            "correction_ocr": d["correction_ocr"],
         }
 
 
@@ -439,9 +445,111 @@ def extract_entities_free_text_fallback(
 
 # ---------------------------------------------------------------------------
 # Adaptateur LLM local (PAR DÉFAUT — docs/ADR/0004 & ADR-0009)
-# Système de prompt : rôle, schéma JSON strict, anti-hallucination,
-# normalisation, négations, few-shot. Le moteur règles reste le repli.
+# Chaque document passe par une PHASE LLM OBLIGATOIRE en deux étapes :
+#   1. correction OCR (prompt dédié ci-dessous) — réduit le taux d'erreur OCR
+#      avant extraction ;
+#   2. extraction structurée VSM (schéma JSON strict, anti-hallucination,
+#      normalisation, négations, few-shot).
+# Le moteur règles reste un REPLI VISIBLE (jamais silencieux : le rapport
+# d'exécution est renvoyé dans provenance.nlp et affiché au médecin).
 # ---------------------------------------------------------------------------
+
+# --- Étape 1 : system prompt de CORRECTION OCR -------------------------------
+_LLM_CORRECTION_SYSTEM = (
+    "Tu es un correcteur expert de texte OCR français spécialisé dans les "
+    "documents médicaux (comptes rendus, ordonnances, lettres de sortie, "
+    "résultats de laboratoire, certificats).\n"
+    "Règles STRICTES :\n"
+    "1. Corrige UNIQUEMENT les erreurs typiques de l'OCR, sans rien ajouter, "
+    "retirer, reformuler ni interpréter :\n"
+    "   - accents et cédilles manquants (diabete → diabète, erytheme → "
+    "érythème, colon → côlon, recu → reçu, seche → sèche) ;\n"
+    "   - confusions de caractères (m/rn, i/l/1, 0/O, e/c, n/u) ;\n"
+    "   - majuscules parasites (« TRAITEMENTS : » → « Traitements : ») ;\n"
+    "   - coupures de mots en fin de ligne (hy-\\npertension → hypertension), "
+    "espaces parasites et ponctuation collée.\n"
+    "2. CONSERVE À L'IDENTIQUE : nombres, doses et unités (1000 mg, 5 mL, UI, "
+    "%), dates, codes (CIM-10, ATC), noms de médicaments, valeurs biologiques "
+    "(chiffre + unité) et pseudonymes entre crochets ([PATIENT_001], "
+    "[DATE_NAISSANCE_001]…).\n"
+    "3. Un mot médical illisible ou inconnu est conservé TEL QUEL — jamais de "
+    "devinette clinique, jamais de diagnostic inventé.\n"
+    "4. Reconstruis les paragraphes cassés par l'OCR en conservant l'ordre des "
+    "informations, les titres de rubriques et la structure du document.\n"
+    "5. Réponds UNIQUEMENT en JSON valide : {\"texte_corrige\": \"…\"} — "
+    "jamais de texte hors JSON, jamais de commentaire."
+)
+
+_LLM_CORRECTION_FEW_SHOT = (
+    "\nExemple :\n"
+    'Texte brut : "ANTECEDENTS : Diabete de type 2. hta.\\n'
+    'ALLERGIES : Penicilline (eruption cutanee).\\n'
+    'TRAITEMENTS : Metformine 1000 mg matin et soir."\n'
+    'Réponse : {"texte_corrige": "ANTÉCÉDENTS : Diabète de type 2. HTA.\\n'
+    'ALLERGIES : Pénicilline (éruption cutanée).\\n'
+    'TRAITEMENTS : Metformine 1000 mg matin et soir."}\n'
+)
+
+
+def build_correction_messages(text: str, max_chars: int = 6000) -> list[dict]:
+    """Messages système + utilisateur de la phase de correction OCR
+    (fonction pure, testable sans GPU)."""
+    return [
+        {"role": "system", "content": _LLM_CORRECTION_SYSTEM + _LLM_CORRECTION_FEW_SHOT},
+        {"role": "user", "content": (
+            "Texte OCR brut (extrait) :\n```\n"
+            + text[:max_chars]
+            + "\n```\n"
+            "Corrige les erreurs OCR et renvoie le JSON {\"texte_corrige\": \"…\"}."
+        )},
+    ]
+
+
+def _count_ocr_corrections(avant: str, apres: str) -> int:
+    """Nombre (approximatif) de groupes de mots modifiés entre le texte brut
+    et le texte corrigé — sert au rapport affiché au médecin."""
+    import difflib
+
+    a = re.findall(r"\S+", avant or "")
+    b = re.findall(r"\S+", apres or "")
+    return sum(
+        1
+        for tag, *_ in difflib.SequenceMatcher(None, a, b).get_opcodes()
+        if tag != "equal"
+    )
+
+
+def correct_ocr_llm(
+    text: str, llm=None, model_path: str | None = None
+) -> tuple[str, int]:  # pragma: no cover — nécessite llama-cpp + GGUF
+    """Phase 1 du traitement LLM : correction des erreurs OCR du texte.
+
+    Retourne (texte_corrige, nb_corrections). Utilise l'instance partagée du
+    modèle (singleton) — jamais de rechargement par document."""
+    from .llm import get_llm_instance
+
+    if llm is None:
+        if model_path:
+            from llama_cpp import Llama
+
+            llm = Llama(model_path=model_path, n_ctx=4096, verbose=False)
+        else:
+            llm = get_llm_instance()
+    from .llm import LLM_INFERENCE_LOCK
+
+    with LLM_INFERENCE_LOCK:  # le modèle partagé n'est pas thread-safe
+        out = llm.create_chat_completion(
+            messages=build_correction_messages(text),
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=2048,  # la réponse contient le texte corrigé (borné par segment)
+        )
+    data = _extract_json_llm(out["choices"][0]["message"]["content"])
+    corrige = str(data.get("texte_corrige") or "").strip()
+    return corrige, _count_ocr_corrections(text, corrige)
+
+
+# --- Étape 2 : system prompt d'EXTRACTION structurée -------------------------
 _LLM_SECTIONS_DEF = {
     "pathologies_actives": "maladies actuelles, motifs, diagnostics du jour",
     "antecedents": "maladies passées, interventions chirurgicales, antécédents médicaux/chirurgicaux/familiaux",
@@ -461,9 +569,10 @@ _LLM_SYSTEM = (
     '"traitements_long_cours": [], "facteurs_risque": [], "vaccinations": [], '
     '"points_vigilance": []}\n'
     '2. Chaque élément est {"valeur": str, "passage": str} : « passage » '
-    "est le texte source REPRODUIT À L'IDENTIQUE (orthographe d'origine, sans "
-    "correction) ; « valeur » est l'information normalisée (orthographe "
-    "corrigée, dosage conservé).\n"
+    "est le texte source REPRODUIT À L'IDENTIQUE depuis le texte OCR BRUT "
+    "(orthographe d'origine, erreurs OCR incluses, sans correction) ; "
+    "« valeur » est l'information normalisée : orthographe corrigée (accents "
+    "et erreurs OCR réparés), dosage conservé.\n"
     "3. N'INVENTE RIEN : si une rubrique est absente du texte, laisse []. "
     "N'ajoute jamais un diagnostic, un traitement ou une donnée qui n'est pas "
     "écrite dans le texte.\n"
@@ -497,23 +606,50 @@ _LLM_FEW_SHOT = (
 )
 
 
-def build_llm_messages(text: str, max_chars: int = 6000) -> list[dict]:
+def build_llm_messages(
+    text: str, max_chars: int = 6000, texte_brut: str | None = None
+) -> list[dict]:
     """Messages système + utilisateur pour l'extraction LLM (fonction pure,
-    testable sans GPU). Le texte est tronqué pour rester dans le contexte."""
-    user = (
-        "Texte OCR du document (extrait) :\n```\n"
-        + text[:max_chars]
-        + "\n```\nExtrais le JSON des rubriques du VSM en appliquant les règles."
-    )
+    testable sans GPU). Si ``texte_brut`` est fourni (phase de correction
+    active), l'extraction reçoit le brut ET le corrigé : « passage » doit
+    être reproduit depuis le BRUT (XAI), « valeur » bénéficie du corrigé."""
+    if texte_brut:
+        user = (
+            "Texte OCR BRUT du document (orthographe d'origine, avec les "
+            "erreurs OCR) :\n```\n"
+            + texte_brut[:max_chars]
+            + "\n```\n"
+            "Texte CORRIGÉ (référence de lecture) :\n```\n"
+            + text[:max_chars]
+            + "\n```\n"
+            "Extrais le JSON des rubriques du VSM : « passage » reproduit à "
+            "l'identique depuis le texte BRUT, « valeur » normalisée."
+        )
+    else:
+        user = (
+            "Texte OCR du document (extrait) :\n```\n"
+            + text[:max_chars]
+            + "\n```\nExtrais le JSON des rubriques du VSM en appliquant les règles."
+        )
     return [
         {"role": "system", "content": _LLM_SYSTEM + _LLM_FEW_SHOT},
         {"role": "user", "content": user},
     ]
 
 
-# Confiance des entités LLM : volontairement conservatrice (< seuil 0,7) —
-# la sortie d'un LLM doit toujours être relue par le médecin (XAI honnête).
-LLM_CONFIDENCE = 0.65
+# Confiance des entités LLM (XAI honnête) — proportionnelle à l'ANCRAGE dans
+# le texte source, et non plus une constante pessimiste (0,65) qui marquait
+# « À valider » même un champ parfaitement extrait :
+#  - passage reproduit à l'identique (niveau 2) → 0,9 : le LLM a travaillé et
+#    s'appuie sur du texte réel → pas de badge « À valider » automatique ;
+#  - seule la valeur normalisée est retrouvée (niveau 1) → 0,8 ;
+#  - introuvable (possible hallucination) → 0,6 → « À valider ».
+# La relecture clinique du médecin reste OBLIGATOIRE (avertissement du VSM),
+# mais le badge reflète désormais la qualité d'extraction, pas le moteur.
+LLM_CONFIDENCE_ANCHORED = 0.9
+LLM_CONFIDENCE_VALEUR_TROUVEE = 0.8
+LLM_CONFIDENCE_UNANCHORED = 0.6
+LLM_CONFIDENCE = LLM_CONFIDENCE_UNANCHORED  # rétro-compatibilité
 
 
 def _extract_json_llm(content: str) -> dict:
@@ -533,24 +669,98 @@ def _extract_json_llm(content: str) -> dict:
         raise
 
 
+def _flatten(s: str) -> str:
+    """Minuscules + suppression des accents et de la ponctuation
+    (comparaisons tolérantes aux erreurs OCR : « Pénicilline » ≈
+    « Penicilline », « satisfaisant. » ≈ « satisfaisant »)."""
+    import unicodedata
+
+    s = "".join(
+        c for c in unicodedata.normalize("NFD", s or "") if unicodedata.category(c) != "Mn"
+    )
+    s = re.sub(r"[^\w\s]", " ", s)  # ponctuation → espace
+    return re.sub(r"\s+", " ", s.lower()).strip()
+
+
+def _anchor(text: str, passage: str, valeur: str) -> tuple[int, int, int, str]:
+    """Localise l'entité dans le texte BRUT. Retourne (offset, longueur,
+    niveau, passage_effectif) :
+
+    - niveau 2 : passage trouvé à l'identique ET contenant la valeur (le
+      plus fiable) — passage_effectif = le passage brut ;
+    - niveau 1 : seule la valeur est retrouvée (ou correspondance floue de
+      ligne, tolérante aux erreurs OCR) — passage_effectif = segment BRUT
+      (le visualiseur « Voir le passage source » ne sait surligner que du
+      texte présent tel quel dans l'OCR) ;
+    - niveau 0 : introuvable (hallucination ?) — passage_effectif = "".
+
+    Garde-fou : un passage reproduit mais qui ne CONTIENT pas la valeur
+    (passage recyclé par le LLM) est déclassé au niveau 0."""
+    from rapidfuzz import fuzz
+
+    if passage:
+        idx = text.find(passage)
+        if idx == -1:
+            idx = text.lower().find(passage.lower())
+        if idx != -1:
+            region = text[idx : idx + len(passage)]
+            if fuzz.partial_ratio(_flatten(valeur), _flatten(region)) >= 60:
+                return idx, len(passage), 2, passage
+            # passage trouvé mais incohérent avec la valeur (recyclé par le
+            # LLM) → non fiable, pas de source affichable
+            return idx, len(passage), 0, ""
+    if valeur:
+        idx = text.find(valeur)
+        if idx == -1:
+            idx = text.lower().find(valeur.lower())
+        if idx != -1:
+            return idx, len(valeur), 1, valeur
+    # Correspondance floue contre les lignes du texte brut : le LLM cite
+    # parfois le texte CORRIGÉ (« Pénicilline (éruption cutanée) ») — on
+    # retrouve alors la ligne brute correspondante (source réelle du médecin).
+    flat_val = _flatten(valeur)
+    best_line, best_score, best_idx = None, 0.0, -1
+    for line in text.splitlines():
+        score = fuzz.token_set_ratio(flat_val, _flatten(line)) / 100.0
+        if score > best_score:
+            best_line, best_score, best_idx = line, score, text.find(line)
+    if best_line is not None and best_score >= 0.85:
+        return best_idx, len(best_line), 1, best_line
+    return -1, 0, 0, ""
+
+
 def extract_entities_llm(
-    text: str, model_path: str | None = None
+    text: str,
+    model_path: str | None = None,
+    llm=None,
+    corrected_text: str | None = None,
 ) -> list[ExtractedEntity]:  # pragma: no cover — nécessite llama-cpp + GGUF
     """Extraction par LLM local (llama-cpp-python + GGUF, jamais en cloud).
 
-    Nécessite un modèle téléchargé : python -m src.extraction_nlp.llm"""
-    from llama_cpp import Llama
+    Réutilise l'instance partagée du modèle (singleton — chargée UNE fois par
+    processus, cf. src/extraction_nlp/llm.get_llm_instance). Si
+    ``corrected_text`` est fourni, l'extraction le lit comme référence mais
+    ancre chaque « passage » dans le texte BRUT (XAI + offsets exacts)."""
+    from .llm import get_llm_instance
 
-    from .llm import default_model_path
+    if llm is None:
+        if model_path:
+            from llama_cpp import Llama
 
-    model_path = model_path or str(default_model_path())
-    llm = Llama(model_path=model_path, n_ctx=8192, verbose=False)
-    out = llm.create_chat_completion(
-        messages=build_llm_messages(text),
-        response_format={"type": "json_object"},
-        temperature=0.0,
-        max_tokens=2048,
-    )
+            llm = Llama(model_path=model_path, n_ctx=4096, verbose=False)
+        else:
+            llm = get_llm_instance()
+    from .llm import LLM_INFERENCE_LOCK
+
+    with LLM_INFERENCE_LOCK:  # le modèle partagé n'est pas thread-safe
+        out = llm.create_chat_completion(
+            messages=build_llm_messages(
+                corrected_text or text, texte_brut=text if corrected_text else None
+            ),
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=1024,  # JSON structuré du segment (court)
+        )
     data = _extract_json_llm(out["choices"][0]["message"]["content"])
     entities = []
     for section, items in data.items():
@@ -565,57 +775,134 @@ def extract_entities_llm(
             valeur = str(it.get("valeur", ""))
             if not valeur:
                 continue
-            idx = text.find(passage)
-            if idx == -1:
-                idx = max(text.find(valeur), 0)
+            idx, length, niveau, passage_effectif = _anchor(text, passage, valeur)
+            confiance = (
+                LLM_CONFIDENCE_ANCHORED
+                if niveau == 2
+                else LLM_CONFIDENCE_VALEUR_TROUVEE
+                if niveau == 1
+                else LLM_CONFIDENCE_UNANCHORED
+            )
+            # « passage » stocké = segment du texte BRUT (surlignable dans le
+            # visualiseur source). Niveau 0 (non ancré) → pas de source
+            # affichable : un passage recyclé par le LLM induirait le médecin
+            # en erreur.
+            passage_final = passage_effectif if niveau > 0 else ""
             entities.append(
                 ExtractedEntity(
                     valeur=valeur,
                     section=section,
-                    confiance=LLM_CONFIDENCE,
-                    passage=passage or valeur,
-                    offset_debut=idx,
-                    offset_fin=idx + len(passage or valeur),
+                    confiance=confiance,
+                    passage=passage_final,
+                    offset_debut=max(idx, 0),
+                    offset_fin=max(idx, 0) + (length or len(passage_final)),
                     moteur_nlp=NLP_ENGINE_LLM,
+                    correction_ocr=(
+                        passage
+                        and passage.strip().lower() != valeur.strip().lower()
+                    ),
                 )
             )
     return entities
 
 
-# Drapeau global : si une inférence LLM dépasse le délai autorisé, on n'essaie
-# PLUS le LLM dans cette session (le modèle 2 Go ne serait pas fini de charger
-# → évite d'empiler plusieurs tentatives en mémoire). Repli règles ensuite.
-_LLM_ABORTED = False
+# ---------------------------------------------------------------------------
+# Exécution de la phase LLM par document — avec RAPPORT d'exécution visible.
+# Un dépassement de délai ou une erreur ne désactive JAMAIS le LLM pour la
+# suite de la session (le modèle reste chargé en singleton) : le document
+# concerné bascule sur les règles et le rapport explique pourquoi.
+# ---------------------------------------------------------------------------
 
 
-def _extract_llm_with_timeout(text: str, timeout: float):
-    """Exécute l'inférence LLM dans un thread daemon et attend `timeout` s.
-
-    Retourne (entités, a_temporisé). Sur timeout, le thread continue en
-    arrière-plan (il finira ou mourra) mais on bascule sur les règles —
+def _run_with_timeout(fn, timeout: float, *args, **kwargs):
+    """Exécute ``fn(*args, **kwargs)`` dans un thread daemon, attend au plus
+    ``timeout`` s. Retourne (résultat, a_temporisé). Sur timeout, le thread
+    continue en arrière-plan (il finira ou mourra) mais l'appelant bascule —
     jamais de blocage infini sur un poste lent."""
     import threading
 
-    box: dict = {"done": False, "ents": None, "err": None}
+    box: dict = {"done": False, "result": None, "err": None}
 
     def _run():  # pragma: no cover - nécessite llama.cpp + GGUF
         try:
-            box["ents"] = extract_entities_llm(text)
-        except Exception as exc:  # noqa: BLE001 - rapporté en cas de timeout
+            box["result"] = fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - relancé dans le thread appelant
             box["err"] = exc
         finally:
             box["done"] = True
 
-    from .llm import LLM_INFERENCE_TIMEOUT_SEC
-
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    t.join(timeout if timeout else LLM_INFERENCE_TIMEOUT_SEC)
+    t.join(timeout)
     if not box["done"]:
         return None, True  # durée dépassée
     if box["err"] is not None:
         raise box["err"]
-    return box["ents"], False
+    return box["result"], False
+
+
+def _extract_llm_with_timeout(text: str, timeout: float):
+    """Rétro-compatibilité : inférence d'extraction avec délai. Retourne
+    (entités, a_temporisé)."""
+    from .llm import LLM_INFERENCE_TIMEOUT_SEC
+
+    return _run_with_timeout(
+        extract_entities_llm, timeout if timeout else LLM_INFERENCE_TIMEOUT_SEC, text
+    )
+
+
+def _charger_modele(report: dict):
+    """Charge (une seule fois) l'instance partagée du modèle et renseigne le
+    rapport. Lève TimeoutError si le chargement dépasse son budget (il
+    continue en arrière-plan pour le document suivant)."""
+    from .llm import LLM_LOAD_TIMEOUT_SEC, get_llm_instance, llm_model_name
+
+    llm = get_llm_instance(LLM_LOAD_TIMEOUT_SEC)
+    report["modele"] = llm_model_name()
+    return llm
+
+
+def _correction_phase(text: str, llm) -> tuple[str | None, int, float | None]:
+    """Phase 1 (correction OCR) avec son budget dédié. Retourne
+    (texte_corrige, nb_corrections, duree_sec). Lève en cas d'échec."""
+    import time
+
+    from .llm import LLM_CORRECTION_TIMEOUT_SEC
+
+    t0 = time.perf_counter()
+    result, timed_out = _run_with_timeout(
+        correct_ocr_llm, LLM_CORRECTION_TIMEOUT_SEC, text, llm=llm
+    )
+    if timed_out:
+        raise TimeoutError(
+            f"délai de correction OCR dépassé ({LLM_CORRECTION_TIMEOUT_SEC} s)"
+        )
+    corrige, n_corr = result
+    return corrige, n_corr, round(time.perf_counter() - t0, 3)
+
+
+def _extraction_phase(
+    text: str, llm, corrige: str | None
+) -> tuple[list[ExtractedEntity], float | None]:
+    """Phase 2 (extraction structurée VSM) avec son budget dédié. Lève en cas
+    d'échec. Retourne (entités, duree_sec)."""
+    import time
+
+    from .llm import LLM_EXTRACTION_TIMEOUT_SEC
+
+    t0 = time.perf_counter()
+    ents, timed_out = _run_with_timeout(
+        extract_entities_llm,
+        LLM_EXTRACTION_TIMEOUT_SEC,
+        text,
+        llm=llm,
+        corrected_text=corrige,
+    )
+    if timed_out:
+        raise TimeoutError(
+            f"délai d'extraction LLM dépassé ({LLM_EXTRACTION_TIMEOUT_SEC} s)"
+        )
+    return ents or [], round(time.perf_counter() - t0, 3)
 
 
 def _drbert_entities_to_extracted(
@@ -665,49 +952,240 @@ def _augment_with_drbert(
     return out
 
 
-def extract_entities(text: str, engine: str = "rules") -> list[ExtractedEntity]:
-    global _LLM_ABORTED  # déclaration en tête (utilisé ci-dessous)
-
-    base: list[ExtractedEntity]
-    if engine == "llm":
-        # Exigence : le LLM est TENTÉ sur toutes les machines dès que le modèle
-        # est présent (la RAM ne bloque plus). Deux garde-fous évitent le
-        # blocage infini : (1) timeout sur l'inférence → repli règles si la
-        # machine est trop lente ; (2) si le LLM renvoie une sortie vide, les
-        # règles prennent le relais (hybride).
-        from .llm import llm_attemptable
-
-        if llm_attemptable() and not _LLM_ABORTED:
-            try:
-                ents, timed_out = _extract_llm_with_timeout(text, timeout=None)
-                if timed_out:
-                    _LLM_ABORTED = True  # ne plus retenter cette session
-                    _log.warning(
-                        "LLM dépassé le délai d'inférence (machine lente) — repli règles"
-                    )
-                    base = extract_entities_free_text_fallback(
-                        text, extract_entities_rules(text)
-                    )
-                elif ents:
-                    base = ents
-                else:
-                    _log.info("LLM a renvoyé une sortie vide — repli règles (hybride)")
-                    base = extract_entities_free_text_fallback(
-                        text, extract_entities_rules(text)
-                    )
-            except Exception:
-                _log.warning("Erreur d'inférence LLM — repli règles")
-                base = extract_entities_free_text_fallback(
-                    text, extract_entities_rules(text)
-                )
+def _hard_split(text: str, max_chars: int) -> list[str]:
+    """Découpe un paragraphe trop long en segments ≤ max_chars (sans couper un
+    mot)."""
+    out, cur = [], ""
+    for w in text.split():
+        if not cur:
+            cur = w
+        elif len(cur) + 1 + len(w) <= max_chars:
+            cur += " " + w
         else:
-            if not _LLM_ABORTED:
-                _log.info("LLM non tenté (modèle absent) — moteur de règles")
-            base = extract_entities_free_text_fallback(
-                text, extract_entities_rules(text)
-            )
-    else:
-        base = extract_entities_free_text_fallback(text, extract_entities_rules(text))
+            out.append(cur)
+            cur = w
+    if cur:
+        out.append(cur)
+    return out
 
-    # Augmentation par DrBERT (NER médical FR) — amélioration du rappel.
-    return _augment_with_drbert(base, text)
+
+def _chunk_text(text: str, max_chars: int) -> list[str]:
+    """Découpe le texte OCR en segments bornés (≈ max_chars) en respectant les
+    paragraphes — un titre de rubrique et ses items restent ensemble. Chaque
+    segment est assez court pour qu'une inférence reste rapide, même sur un
+    CPU lent sans GPU."""
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+    chunks, buf = [], ""
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip("\n")
+        if not para:
+            continue
+        pieces = [para] if len(para) <= max_chars else _hard_split(para, max_chars)
+        for piece in pieces:
+            if not buf:
+                buf = piece
+            elif len(buf) + 2 + len(piece) <= max_chars:
+                buf += "\n\n" + piece
+            else:
+                chunks.append(buf)
+                buf = piece
+    if buf:
+        chunks.append(buf)
+    return chunks or [text]
+
+
+def extract_entities_with_report(
+    text: str, engine: str = "rules", progress=None
+) -> tuple[list[ExtractedEntity], dict]:
+    """Extraction + RAPPORT du moteur réellement utilisé.
+
+    Pour ``engine="llm"``, la phase LLM locale est OBLIGATOIRE dès que le
+    modèle est présent : correction OCR (prompt dédié) puis extraction
+    structurée. Le texte est découpé en SEGMENTS bornés (grands documents) ;
+    chaque segment est traité indépendamment, avec repli règles par segment en
+    cas d'échec — jamais de blocage ni d'échec global. ``progress(done, total)``
+    (optionnel) est appelé entre les segments pour l'affichage.
+
+    Rapport : {"moteur", "statut", "raison", "phase_correction_ocr",
+    "nb_corrections_ocr", "duree_correction_sec", "duree_extraction_sec",
+    "modele", "nb_chunks"}."""
+    report: dict = {
+        "moteur": NLP_ENGINE_RULES,
+        "statut": "regles",
+        "raison": None,
+        "phase_correction_ocr": False,
+        "nb_corrections_ocr": 0,
+        "duree_correction_sec": None,
+        "duree_extraction_sec": None,
+        "modele": None,
+        "nb_chunks": 0,
+    }
+
+    def _regles() -> list[ExtractedEntity]:
+        return _augment_with_drbert(
+            extract_entities_free_text_fallback(text, extract_entities_rules(text)),
+            text,
+        )
+
+    if engine != "llm":
+        return _regles(), report
+
+    from .llm import llm_attemptable, llm_unavailability_reason
+
+    if not llm_attemptable():
+        _log.info("LLM non disponible — moteur de règles : %s", llm_unavailability_reason())
+        report["statut"] = "modele_absent"
+        report["raison"] = llm_unavailability_reason() or (
+            "Modèle LLM local absent — téléchargez-le : "
+            "python -m src.extraction_nlp.llm"
+        )
+        return _regles(), report
+
+    try:
+        llm = _charger_modele(report)
+    except Exception as exc:  # noqa: BLE001 - tracé dans le rapport
+        _log.warning("Modèle LLM indisponible — repli règles : %s", exc)
+        report["statut"] = "repli_regles"
+        report["raison"] = f"Modèle LLM indisponible ({exc})"
+        return _regles(), report
+
+    # Découpage en segments bornés : chaque inférence reste rapide (PC lent).
+    from .llm import LLM_CHUNK_CHARS
+
+    chunks = _chunk_text(text, LLM_CHUNK_CHARS)
+    report["nb_chunks"] = len(chunks)
+
+    llm_ents: list[ExtractedEntity] = []
+    rules_ents: list[ExtractedEntity] = []
+    n_regles = 0
+    total_corr = 0.0
+    total_extr = 0.0
+    total_n_corr = 0
+    correction_ok = False
+    reasons: list[str] = []
+    llm_disabled = False
+
+    for ci, chunk in enumerate(chunks):
+        if progress:
+            progress(ci + 1, len(chunks))
+        # Après un premier dépassement de délai, on bascule le RESTE du
+        # document sur les règles : le thread d'inférence chronométré continue
+        # en arrière-plan et garde le verrou du modèle — ne pas empiler de
+        # nouvelles requêtes qui expireraient en cascade.
+        if llm_disabled:
+            n_regles += 1
+            rules_ents.extend(
+                extract_entities_free_text_fallback(chunk, extract_entities_rules(chunk))
+            )
+            continue
+
+        # Phase 1 — correction OCR du segment (obligatoire, prompt dédié).
+        corrige: str | None = None
+        try:
+            corrige, n_corr, d_corr = _correction_phase(chunk, llm)
+            correction_ok = True
+            total_n_corr += n_corr
+            if d_corr is not None:
+                total_corr += d_corr
+        except TimeoutError as exc:  # noqa: BLE001 - machine trop lente
+            llm_disabled = True
+            reasons.append(f"{exc} (LLM désactivé pour le reste du document)")
+            _log.warning(
+                "segment %d/%d — correction OCR trop lente (%s) ; reste du "
+                "document traité par les règles",
+                ci + 1,
+                len(chunks),
+                exc,
+            )
+        except Exception as exc:  # noqa: BLE001 - repli par segment
+            _log.warning(
+                "segment %d/%d — correction OCR échouée (%s)", ci + 1, len(chunks), exc
+            )
+
+        if llm_disabled:
+            n_regles += 1
+            rules_ents.extend(
+                extract_entities_free_text_fallback(chunk, extract_entities_rules(chunk))
+            )
+            continue
+
+        # Phase 2 — extraction structurée du segment.
+        try:
+            ents, d_extr = _extraction_phase(chunk, llm, corrige)
+            if d_extr is not None:
+                total_extr += d_extr
+            if ents:
+                llm_ents.extend(ents)
+            else:
+                n_regles += 1
+                rules_ents.extend(
+                    extract_entities_free_text_fallback(chunk, extract_entities_rules(chunk))
+                )
+        except TimeoutError as exc:  # noqa: BLE001 - machine trop lente
+            llm_disabled = True
+            n_regles += 1
+            reasons.append(f"{exc} (LLM désactivé pour le reste du document)")
+            rules_ents.extend(
+                extract_entities_free_text_fallback(chunk, extract_entities_rules(chunk))
+            )
+            _log.warning(
+                "segment %d/%d — extraction LLM trop lente (%s) ; reste du "
+                "document traité par les règles",
+                ci + 1,
+                len(chunks),
+                exc,
+            )
+        except Exception as exc:  # noqa: BLE001 - repli par segment
+            n_regles += 1
+            reasons.append(f"segment {ci + 1} : {exc}")
+            rules_ents.extend(
+                extract_entities_free_text_fallback(chunk, extract_entities_rules(chunk))
+            )
+            _log.warning(
+                "segment %d/%d — extraction LLM échouée (%s) → règles",
+                ci + 1,
+                len(chunks),
+                exc,
+            )
+
+    report["phase_correction_ocr"] = correction_ok
+    report["nb_corrections_ocr"] = total_n_corr
+    report["duree_correction_sec"] = round(total_corr, 3) if total_corr else None
+    report["duree_extraction_sec"] = round(total_extr, 3) if total_extr else None
+
+    if llm_ents:
+        # Fusion des segments + dédoublonnage (les entités LLM priment).
+        merged = list(llm_ents)
+        seen = {(e.valeur.strip().lower(), e.section) for e in merged}
+        for e in rules_ents:
+            key = (e.valeur.strip().lower(), e.section)
+            if key not in seen:
+                seen.add(key)
+                merged.append(e)
+        report["moteur"] = NLP_ENGINE_LLM
+        if n_regles == 0:
+            report["statut"] = "llm_complet" if correction_ok else "llm_extraction_seule"
+            if not correction_ok:
+                report["raison"] = "correction OCR non appliquée"
+        else:
+            report["statut"] = "llm_partiel"
+            report["raison"] = (
+                f"{n_regles}/{len(chunks)} segment(s) replié(s) sur les règles"
+            )
+        return merged, report
+
+    # Aucune entité LLM → repli règles sur le texte COMPLET (plus complet que
+    # le per-segment), tracé dans le rapport.
+    _log.info("LLM n'a produit aucune entité — repli règles (hybride)")
+    report["moteur"] = NLP_ENGINE_RULES
+    report["statut"] = "repli_regles"
+    report["raison"] = "; ".join(reasons) if reasons else "Sortie LLM vide"
+    return _regles(), report
+
+
+def extract_entities(text: str, engine: str = "rules") -> list[ExtractedEntity]:
+    """Extraction seule (sans rapport) — rétro-compatibilité."""
+    return extract_entities_with_report(text, engine=engine)[0]

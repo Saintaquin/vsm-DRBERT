@@ -1,18 +1,24 @@
 """Tests de l'intégration LLM local (docs/ADR/0004).
 
 L'inférence réelle (llama-cpp + GGUF) n'est pas exécutée en CI : les tests
-vérifient la configuration, le repli sur les règles et le câblage API."""
+vérifient la configuration, les prompts (correction OCR + extraction), le
+rapport d'exécution XAI (provenance.nlp) et le repli sur les règles."""
 
 from pathlib import Path
 
 import pytest
 
+from src.extraction_nlp import entity_extractor as ee
 from src.extraction_nlp import llm as llm_mod
 from src.extraction_nlp.entity_extractor import (
-    LLM_CONFIDENCE,
+    ExtractedEntity,
+    LLM_CONFIDENCE_ANCHORED,
+    LLM_CONFIDENCE_UNANCHORED,
     NLP_ENGINE_LLM,
+    build_correction_messages,
+    build_llm_messages,
     extract_entities,
-    extract_entities_llm,
+    extract_entities_with_report,
     _extract_json_llm,
 )
 from src.extraction_nlp.pipeline import run_pipeline
@@ -57,16 +63,18 @@ def test_extract_json_llm_tolerant():
     assert _extract_json_llm('Voici : {"a": [1]} fin.') == {"a": [1]}
 
 
-def test_extract_entities_llm_not_available_falls_back_to_rules():
+def test_extract_entities_llm_not_available_falls_back_to_rules(monkeypatch):
     # llama_cpp n'est pas installé : engine="llm" retombe sur les règles
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: False)
     ents = extract_entities(
         "ANTECEDENTS : Diabete de type 2.\nALLERGIES : Penicilline.", engine="llm"
     )
     assert {e.section for e in ents} >= {"antecedents", "allergies"}
 
 
-def test_pipeline_llm_engine_provenance():
+def test_pipeline_llm_engine_provenance(monkeypatch):
     # Le moteur « llm » est tracé dans la provenance du VSM (XAI)
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: False)
     ocr_json = {
         "document_id": "doc_x",
         "source_file": "f.png",
@@ -78,14 +86,19 @@ def test_pipeline_llm_engine_provenance():
         "pipeline_version": "1.0.0",
     }
     out = run_pipeline(ocr_json, nlp_engine="llm")
-    # sans modèle : repli règles → provenance trace le moteur réel
+    # sans modèle : repli règles → provenance trace le moteur réel + le rapport
     assert out["provenance"]["moteur_nlp"] == "rules-fr-v1"
+    assert out["provenance"]["nlp"]["statut"] == "modele_absent"
+    assert "nlp" in out["provenance"]
 
 
-def test_llm_confidence_is_conservative():
-    # La confiance LLM est sous le seuil 0,7 → champs « À valider » (XAI)
-    assert LLM_CONFIDENCE < 0.7
-    assert NLP_ENGINE_LLM == "llama-3.1-8b-q4-local"
+def test_llm_confidence_anchored_policy():
+    # La confiance LLM suit l'ANCRAGE dans le texte source (et non plus une
+    # constante pessimiste) : passage reproduit à l'identique → fiable (pas de
+    # « À valider » automatique) ; valeur introuvable → douteuse (< 0,7).
+    assert LLM_CONFIDENCE_ANCHORED >= 0.7
+    assert LLM_CONFIDENCE_UNANCHORED < 0.7
+    assert NLP_ENGINE_LLM == "llm-local-q4"
 
 
 def test_suggest_model_by_ram(monkeypatch):
@@ -116,12 +129,9 @@ def test_light_model_for_small_machines():
 def test_prompt_system_is_structured():
     # Système de prompt efficace : schéma JSON, anti-hallucination,
     # normalisation, négations, few-shot, pseudonymes exclus.
-    from src.extraction_nlp.entity_extractor import build_llm_messages
-
     msgs = build_llm_messages("ANTECEDENTS : Diabete de type 2.", max_chars=2000)
     assert msgs[0]["role"] == "system" and msgs[1]["role"] == "user"
     system = msgs[0]["content"]
-    user = msgs[1]["content"]
     # schéma JSON strict présent
     assert '"pathologies_actives"' in system
     assert '"points_vigilance"' in system
@@ -137,20 +147,122 @@ def test_prompt_system_is_structured():
 
 
 def test_prompt_truncation():
-    from src.extraction_nlp.entity_extractor import build_llm_messages
-
     long = "x" * 10_000
     msgs = build_llm_messages(long, max_chars=500)
     assert "x" * 500 in msgs[1]["content"]
     assert "x" * 501 not in msgs[1]["content"]
 
 
+def test_correction_prompt_structured():
+    # Phase 1 dédiée : system prompt de correction OCR (erreurs typiques,
+    # doses/pseudonymes intouchables, sortie JSON stricte).
+    msgs = build_correction_messages("ANTECEDENTS : Diabete de type 2.", max_chars=2000)
+    assert msgs[0]["role"] == "system" and msgs[1]["role"] == "user"
+    system = msgs[0]["content"]
+    assert '"texte_corrige"' in system
+    assert "diabete" in system and "diabète" in system
+    assert "PATIENT_001" in system  # pseudonymes conservés à l'identique
+    assert "1000 mg" in system  # doses conservées à l'identique
+    assert "devinette" in system  # interdiction d'inventer
+
+
+def test_extraction_prompt_with_raw_and_corrected():
+    # Phase 2 : l'extraction reçoit le texte BRUT (pour « passage ») et le
+    # texte CORRIGÉ (référence de lecture pour « valeur »).
+    msgs = build_llm_messages(
+        "ANTÉCÉDENTS : Diabète de type 2.",
+        texte_brut="ANTECEDENTS : Diabete de type 2.",
+        max_chars=2000,
+    )
+    user = msgs[1]["content"]
+    assert "BRUT" in user and "CORRIGÉ" in user
+    assert "passage" in user and "valeur" in user
+
+
+def test_count_ocr_corrections():
+    assert ee._count_ocr_corrections("Diabete", "Diabète") >= 1
+    assert ee._count_ocr_corrections("Metformine 1000 mg", "Metformine 1000 mg") == 0
+
+
+def test_anchor_passage_verbatim_coherent():
+    # Passage trouvé à l'identique et contenant la valeur → niveau 2.
+    idx, length, niveau, eff = ee._anchor(
+        "ANTECEDENTS : Diabete de type 2.", "Diabete de type 2", "Diabète de type 2"
+    )
+    assert niveau == 2 and eff == "Diabete de type 2"
+
+
+def test_anchor_recycled_passage_downgraded():
+    # Le LLM a recyclé un passage qui ne contient pas la valeur → niveau 0
+    # (pas de fausse confiance 0,9).
+    idx, length, niveau, eff = ee._anchor(
+        "ANTECEDENTS : Diabete de type 2.", "Diabete de type 2", "Hypertension artérielle"
+    )
+    assert niveau == 0
+
+
+def test_anchor_fuzzy_finds_raw_line_for_corrected_passage():
+    # Le LLM cite le texte CORRIGÉ : on retrouve la ligne BRUTE (surlignable
+    # dans le visualiseur) malgré les différences d'accents.
+    text = "ALLERGIES : Penicilline (eruption cutanee)."
+    idx, length, niveau, eff = ee._anchor(
+        text, "ALLERGIES : Pénicilline (éruption cutanée)", "Pénicilline"
+    )
+    assert niveau == 1
+    assert eff in text  # segment brut réel, pas la forme corrigée
+    assert "Pénicilline" not in eff  # accent du texte corrigé absent du brut
+
+
+def test_anchor_fuzzy_tolerates_punctuation():
+    # « satisfaisant. » (avec point) doit matcher « satisfaisant » — la
+    # ponctuation est neutralisée avant la comparaison floue.
+    text = "CONCLUSION : Equilibre glycemique satisfaisant."
+    idx, length, niveau, eff = ee._anchor(
+        text,
+        "CONCLUSION : Équilibre glycémique satisfaisant.",
+        "Équilibre glycémique satisfaisant.",
+    )
+    assert niveau == 1
+    assert eff == text
+
+
+def test_anchor_unfound_hallucination():
+    idx, length, niveau, eff = ee._anchor("Bilan normal.", "Rien", "Tout va bien")
+    assert niveau == 0 and eff == ""
+
+
+def test_run_with_timeout_times_out():
+    import time
+
+    def slow():  # pragma: no cover - doit dépasser le délai
+        time.sleep(1.0)
+        return "x"
+
+    result, timed_out = ee._run_with_timeout(slow, 0.05)
+    assert timed_out is True and result is None
+
+
+def test_correction_phase_unpacks_result(monkeypatch):
+    # Régression : _run_with_timeout renvoie (résultat, a_temporisé) — la phase
+    # de correction doit déballer le résultat en (texte_corrige, nb_corrections).
+    monkeypatch.setattr(
+        ee,
+        "correct_ocr_llm",
+        lambda text, llm=None, model_path=None: ("texte corrigé", 7),
+    )
+    corrige, n_corr, duree = ee._correction_phase("brut", llm="dummy")
+    assert corrige == "texte corrigé" and n_corr == 7
+    assert duree is not None and duree >= 0.0
+
+
 def test_llm_attemptable_when_model_present(monkeypatch, tmp_path):
     # Exigence « LLM sur toutes machines » : le LLM est TENTÉ dès que le modèle
-    # est présent — la RAM ne bloque plus (juste un avertissement).
+    # est présent ET que llama-cpp-python est importable — la RAM ne bloque
+    # plus (juste un avertissement).
     model = tmp_path / "model.gguf"
     model.write_bytes(b"GGUF" + b"\x00" * (2 * 1024 * 1024))  # ~2 Mo
     monkeypatch.setattr(llm_mod, "default_model_path", lambda: model)
+    monkeypatch.setattr(llm_mod, "_llama_cpp_available", lambda: True)
     assert llm_mod.llm_attemptable() is True
     # avertissement (non bloquant) si RAM juste
     monkeypatch.setattr(llm_mod, "available_ram_gb", lambda: 0.5)
@@ -162,35 +274,68 @@ def test_llm_attemptable_when_model_present(monkeypatch, tmp_path):
     assert llm_mod.llm_attemptable() is False
 
 
-def test_llm_timeout_falls_back_to_rules(monkeypatch):
-    # Timeout : une inférence trop longue (machine lente) bascule sur les
-    # règles au lieu de bloquer indéfiniment.
-    from src.extraction_nlp import entity_extractor as ee
+def test_llm_unavailable_reason_distinguishes_causes(monkeypatch, tmp_path):
+    # Le modèle présent SANS la bibliothèque llama-cpp-python a une raison
+    # distincte (pip install) — bug « LLM annoncé actif mais jamais exécuté ».
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"GGUF" + b"\x00" * (2 * 1024 * 1024))
+    monkeypatch.setattr(llm_mod, "default_model_path", lambda: model)
+    monkeypatch.setattr(llm_mod, "_llama_cpp_available", lambda: False)
+    assert "llama-cpp-python" in llm_mod.llm_unavailability_reason()
+    # tout est prêt → aucune raison (LLM utilisable)
+    monkeypatch.setattr(llm_mod, "_llama_cpp_available", lambda: True)
+    assert llm_mod.llm_unavailability_reason() == ""
+    # modèle absent → indication de téléchargement
+    monkeypatch.setattr(llm_mod, "default_model_path", lambda: tmp_path / "absent.gguf")
+    assert "python -m" in llm_mod.llm_unavailability_reason()
 
+
+# ---------------------------------------------------------------------------
+# Orchestration de la phase LLM par document (rapport XAI inclus)
+# ---------------------------------------------------------------------------
+
+
+def _patch_llm(monkeypatch, ents=None, error=None):
+    """Simule une phase LLM (chargement + correction + extraction) sans GPU."""
     monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
-    monkeypatch.setattr(ee, "_LLM_ABORTED", False)
+    monkeypatch.setattr(ee, "_charger_modele", lambda report: "dummy-model")
 
-    def slow_llm(text):  # pragma: no cover - doit dépasser le délai
-        import time
+    def correction(text, llm):  # pragma: no cover - test
+        return "texte corrigé", 3, 1.5
 
-        time.sleep(1.0)
-        return []
+    def extraction(text, llm, corrige):  # pragma: no cover - test
+        if error is not None:
+            raise error
+        return ents or [], 2.5
 
-    monkeypatch.setattr(ee, "extract_entities_llm", slow_llm)
-    ents, timed_out = ee._extract_llm_with_timeout("Texte.", timeout=0.05)
-    assert timed_out is True and ents is None
-    # extract_entities avec un petit timeout → règles (pas de blocage)
-    monkeypatch.setattr(llm_mod, "LLM_INFERENCE_TIMEOUT_SEC", 0.05)
-    ents = ee.extract_entities("ANTECEDENTS : Diabete de type 2.", engine="llm")
-    assert any(e.section == "antecedents" for e in ents)
+    monkeypatch.setattr(ee, "_correction_phase", correction)
+    monkeypatch.setattr(ee, "_extraction_phase", extraction)
 
 
-def test_extract_llm_skipped_when_model_absent(monkeypatch):
-    # Modèle absent → on ne tente jamais llama.cpp, règles directes.
-    from src.extraction_nlp import entity_extractor as ee
+def test_llm_phase_runs_and_reports(monkeypatch):
+    # Document traité : phase LLM obligatoire (correction OCR + extraction),
+    # le rapport atteste les deux étapes, les durées et les corrections.
+    ents = [
+        ExtractedEntity(
+            "Diabète de type 2", "antecedents", 0.9, "Diabete de type 2", 0, 18,
+            correction_ocr=True,
+        )
+    ]
+    _patch_llm(monkeypatch, ents)
+    out, report = extract_entities_with_report("ANTECEDENTS : Diabete de type 2.", engine="llm")
+    assert [e.valeur for e in out] == ["Diabète de type 2"]
+    assert report["statut"] == "llm_complet"
+    assert report["moteur"] == NLP_ENGINE_LLM
+    assert report["phase_correction_ocr"] is True
+    assert report["nb_corrections_ocr"] == 3
+    assert report["duree_correction_sec"] == 1.5
+    assert report["duree_extraction_sec"] == 2.5
 
+
+def test_model_absent_reported(monkeypatch):
+    # Modèle absent → règles directes, jamais d'appel llama.cpp, rapport clair.
     monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: False)
-    monkeypatch.setattr(ee, "_LLM_ABORTED", False)
+    monkeypatch.setattr(llm_mod, "llm_unavailability_reason", lambda: "")
     called = {"llm": False}
 
     def fake_llm(text):  # pragma: no cover - ne doit jamais être appelée
@@ -198,43 +343,126 @@ def test_extract_llm_skipped_when_model_absent(monkeypatch):
         return []
 
     monkeypatch.setattr(ee, "extract_entities_llm", fake_llm)
-    ents = ee.extract_entities("ANTECEDENTS : Diabete de type 2.", engine="llm")
+    ents, report = extract_entities_with_report(
+        "ANTECEDENTS : Diabete de type 2.", engine="llm"
+    )
     assert called["llm"] is False
     assert any(e.section == "antecedents" for e in ents)
+    assert report["statut"] == "modele_absent"
+    assert "python -m" in report["raison"]
 
 
-def test_llm_empty_result_falls_back_to_rules(monkeypatch):
-    # Hybride : si le LLM renvoie une sortie VIDE (JSON tout « [] » sur un
-    # petit modèle), les règles prennent le relais au lieu d'un VSM vide.
-    from src.extraction_nlp import entity_extractor as ee
-
-    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
-    monkeypatch.setattr(ee, "_LLM_ABORTED", False)
-
-    def fake_llm(text):
-        return []
-
-    monkeypatch.setattr(ee, "extract_entities_llm", fake_llm)
-    ents = ee.extract_entities(
+def test_llm_empty_result_falls_back_to_rules_and_reports(monkeypatch):
+    # Hybride : si le LLM renvoie une sortie VIDE, les règles prennent le
+    # relais et le rapport l'explique (jamais silencieux).
+    _patch_llm(monkeypatch, ents=[])
+    ents, report = extract_entities_with_report(
         "ANTECEDENTS : Diabete de type 2.\nALLERGIES : Penicilline.", engine="llm"
     )
     assert {e.section for e in ents} >= {"antecedents", "allergies"}
+    assert report["statut"] == "repli_regles"
+    assert report["moteur"] == "rules-fr-v1"
+    assert report["raison"] == "Sortie LLM vide"
+
+
+def test_llm_error_falls_back_to_rules_and_reports(monkeypatch):
+    # Erreur d'inférence → règles, avec la raison dans le rapport.
+    _patch_llm(monkeypatch, error=RuntimeError("mémoire insuffisante"))
+    ents, report = extract_entities_with_report(
+        "ANTECEDENTS : Diabete de type 2.", engine="llm"
+    )
+    assert any(e.section == "antecedents" for e in ents)
+    assert report["statut"] == "repli_regles"
+    assert "mémoire insuffisante" in report["raison"]
+
+
+def test_correction_failure_keeps_extraction(monkeypatch):
+    # Une correction OCR qui échoue (erreur NON-temporelle) ne fait pas tomber
+    # la phase LLM entière : l'extraction continue sur le texte brut.
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
+    monkeypatch.setattr(ee, "_charger_modele", lambda report: "dummy-model")
+
+    def correction_fails(text, llm):  # pragma: no cover - test
+        raise RuntimeError("correction OCR indisponible")
+
+    def extraction(text, llm, corrige):  # pragma: no cover - test
+        assert corrige is None  # extraction sur texte brut
+        return [ExtractedEntity("HTA", "antecedents", 0.9, "HTA", 0, 3)], 1.0
+
+    monkeypatch.setattr(ee, "_correction_phase", correction_fails)
+    monkeypatch.setattr(ee, "_extraction_phase", extraction)
+    ents, report = extract_entities_with_report("ANTECEDENTS : HTA.", engine="llm")
+    assert [e.valeur for e in ents] == ["HTA"]
+    assert report["statut"] == "llm_extraction_seule"
+    assert report["phase_correction_ocr"] is False
+    assert report["raison"] == "correction OCR non appliquée"
+
+
+def test_timeout_disables_llm_for_rest_of_document(monkeypatch):
+    # Sur une machine trop lente, un premier dépassement de délai bascule le
+    # RESTE du document sur les règles (pas d'empilement d'inférences qui
+    # expireraient en cascade) — le traitement aboutit quand même.
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
+    monkeypatch.setattr(ee, "_charger_modele", lambda report: "dummy-model")
+    monkeypatch.setattr(llm_mod, "LLM_CHUNK_CHARS", 40)  # force plusieurs segments
+
+    def correction_timeout(text, llm):  # pragma: no cover - test
+        raise TimeoutError("délai de correction OCR dépassé (300 s)")
+
+    monkeypatch.setattr(ee, "_correction_phase", correction_timeout)
+    monkeypatch.setattr(
+        ee,
+        "_extraction_phase",
+        lambda text, llm, corrige: ([], 0.0),
+    )
+    texte = "ANTECEDENTS : Diabete de type 2. " * 10
+    ents, report = extract_entities_with_report(texte, engine="llm")
+    assert report["nb_chunks"] > 1
+    assert report["statut"] == "repli_regles"
+    assert any(e.section == "antecedents" for e in ents)
+    assert "LLM désactivé" in report["raison"]
+
+
+def test_timeout_does_not_disable_llm_permanently(monkeypatch):
+    # Un dépassement de délai ne désactive PLUS le LLM pour la session :
+    # le document suivant retente la phase LLM (le modèle reste chargé).
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
+    monkeypatch.setattr(ee, "_charger_modele", lambda report: "dummy-model")
+    monkeypatch.setattr(
+        ee, "_correction_phase", lambda text, llm: ("corrigé", 0, 1.0)
+    )
+    state = {"calls": 0}
+
+    def slow_then_ok(text, llm, corrige):  # pragma: no cover - test
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise TimeoutError("délai d'extraction LLM dépassé (300 s)")
+        return [ExtractedEntity("HTA", "antecedents", 0.9, "HTA", 0, 3)], 1.0
+
+    monkeypatch.setattr(ee, "_extraction_phase", slow_then_ok)
+    _, report1 = extract_entities_with_report("ANTECEDENTS : HTA.", engine="llm")
+    assert report1["statut"] == "repli_regles"
+    # deuxième document de la session : le LLM est RETENTÉ et réussit
+    ents2, report2 = extract_entities_with_report("ANTECEDENTS : HTA.", engine="llm")
+    assert [e.valeur for e in ents2] == ["HTA"]
+    assert report2["statut"] == "llm_complet"
 
 
 def test_llm_non_empty_result_is_kept(monkeypatch):
     # Si le LLM trouve du contenu, il est conservé tel quel (pas de règles).
-    from src.extraction_nlp import entity_extractor as ee
-    from src.extraction_nlp.entity_extractor import ExtractedEntity
+    ents = [ExtractedEntity("Malaise", "points_vigilance", 0.9, "Malaise", 0, 6)]
+    _patch_llm(monkeypatch, ents)
+    out, report = extract_entities_with_report("Malaise au réveil.", engine="llm")
+    assert len(out) == 1 and out[0].section == "points_vigilance"
+    assert report["moteur"] == NLP_ENGINE_LLM
 
-    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
-    monkeypatch.setattr(ee, "_LLM_ABORTED", False)
 
-    monkeypatch.setattr(
-        ee,
-        "extract_entities_llm",
-        lambda text: [
-            ExtractedEntity("Malaise", "points_vigilance", 0.65, "Malaise", 0, 6)
-        ],
+def test_rules_engine_report(monkeypatch):
+    # Moteur règles explicite : rapport « regles », pas d'appel LLM.
+    monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: False)
+    ents, report = extract_entities_with_report(
+        "ANTECEDENTS : Diabete de type 2.", engine="rules"
     )
-    ents = ee.extract_entities("Malaise au réveil.", engine="llm")
-    assert len(ents) == 1 and ents[0].section == "points_vigilance"
+    assert report["statut"] == "regles"
+    assert report["moteur"] == "rules-fr-v1"
+    assert any(e.section == "antecedents" for e in ents)

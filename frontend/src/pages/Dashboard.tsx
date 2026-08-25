@@ -119,8 +119,8 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
           </fieldset>
           {!llmAvailable ? (
             <Alerte kind="info">
-              ⚠ LLM local non téléchargé — l'extraction utilise le moteur de règles en repli. Pour activer le LLM
-              (Qwen 2.5 3B, ~2 Go) : <code className="font-mono">python -m src.extraction_nlp.llm</code>
+              ⚠ LLM local indisponible — {llmReason ||
+              "l'extraction utilise le moteur de règles en repli. Pour activer le LLM (Qwen 2.5 3B, ~2 Go) : python -m src.extraction_nlp.llm"}
             </Alerte>
           ) : llmReason ? (
             <Alerte kind="info">ℹ LLM en cours d'utilisation — {llmReason}</Alerte>
@@ -151,6 +151,15 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
               Document traité : {lastReport.processing_report.pages_ok} page(s) en{" "}
               {lastReport.processing_report.duration_sec.toFixed(1)} s ·{" "}
               {lastReport.pii_detected_count} PII détectée(s) et masquée(s).{" "}
+              {lastReport.nlp_report && (
+                <span>
+                  {lastReport.nlp_report.statut.startsWith("llm")
+                    ? `· LLM local : ${lastReport.nlp_report.nb_corrections_ocr ?? 0} correction(s) OCR`
+                    : `· ⚠ ${lastReport.nlp_report.statut === "modele_absent"
+                        ? "LLM local absent — règles"
+                        : `repli règles (${lastReport.nlp_report.raison ?? lastReport.nlp_report.statut})`}`}{" "}
+                </span>
+              )}
               <button className="font-semibold underline underline-offset-2"
                 onClick={() => onOpenVsm(lastReport.vsm_id)}>
                 Ouvrir le VSM →

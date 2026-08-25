@@ -35,7 +35,22 @@ export interface ChampTrace {
   valeur: string; confiance: number; a_valider: boolean;
   source?: { document_id?: string; page?: number; passage?: string };
   moteurs?: { ocr?: string; nlp?: string };
+  moteur_nlp?: string;
+  correction_ocr?: boolean;
   code_normalise?: { systeme: string; code: string; libelle: string } | null;
+}
+/** Rapport de la phase NLP/LLM locale (XAI) — rempli par le backend. */
+export interface NlpReport {
+  moteur: string;
+  statut: "regles" | "modele_absent" | "repli_regles" | "llm_complet" | "llm_extraction_seule" | "llm_partiel" | string;
+  raison?: string | null;
+  phase_correction_ocr?: boolean;
+  nb_corrections_ocr?: number;
+  duree_correction_sec?: number | null;
+  duree_extraction_sec?: number | null;
+  modele?: string | null;
+  nb_chunks?: number;
+  assist_llm?: boolean;
 }
 export interface Vsm {
   vsm_id?: string; document_id?: string; statut: string;
@@ -44,6 +59,7 @@ export interface Vsm {
   medecin_traitant?: Record<string, ChampTrace>;
   sections: Record<string, ChampTrace[] | Record<string, ChampTrace>>;
   completude?: Record<string, number>;
+  provenance?: { moteur_nlp?: string; nlp?: NlpReport; documents_sources?: unknown[] };
   signature?: { signe_par: string; date_signature: string; empreinte_vsm: string } | null;
 }
 export interface VsmListItem { id: string; document_id: string; statut: string; created_at: string; }
@@ -52,6 +68,7 @@ export interface OcrResult { document_id: string; text: string; pages?: { page: 
 export interface ProcessResult {
   vsm_id: string; vsm: Vsm; pii_detected_count: number;
   processing_report: { pages_total: number; pages_ok: number; duration_sec: number; engine: string; anomalies: string[] };
+  nlp_report?: NlpReport;
 }
 
 /** État d'un traitement asynchrone (voir startProcess / processStatus). */
@@ -121,6 +138,9 @@ export const api = {
   getVsm: (id: string) => request<Vsm>(`/vsm/${id}`),
   validateVsm: (id: string, body: { sections?: Vsm["sections"]; statut: string; signe_par?: string }) =>
     request<Vsm>(`/vsm/${id}/validate`, { method: "POST", body: JSON.stringify(body) }),
+  /** Relance la phase LLM locale sur les champs « À valider » du VSM. */
+  llmAssist: (id: string) =>
+    request<{ vsm: Vsm; champs_mis_a_jour: number; nlp_report: NlpReport }>(`/vsm/${id}/llm-assist`, { method: "POST" }),
   exportHtmlUrl: (id: string) => `/vsm/${id}/export?fmt=html`,
   exportPdfUrl: (id: string) => `/vsm/${id}/export?fmt=pdf`,
   stats: () => request<Stats>("/stats"),
