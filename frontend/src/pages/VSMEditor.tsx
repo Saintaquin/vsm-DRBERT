@@ -19,15 +19,14 @@ const SECTION_ORDER: [string, string][] = [
 const isList = (v: unknown): v is ChampTrace[] => Array.isArray(v);
 
 /** Ligne d'information sur la phase NLP/LLM locale (XAI) : moteur réellement
- *  utilisé, corrections OCR, durées, raison du repli éventuel. */
+ *  utilisé, corrections (lexicales), durée, raison du repli éventuel. */
 function NlpInfo({ report }: { report?: NlpReport }) {
   if (!report) return null;
   const llm = report.statut.startsWith("llm");
   const partiel = report.statut === "llm_partiel";
   const detail = llm
-    ? `LLM local${report.modele ? ` ${report.modele}` : ""} · ${report.nb_corrections_ocr ?? 0} correction(s) OCR` +
-      (report.duree_correction_sec != null ? ` en ${report.duree_correction_sec.toFixed(0)} s` : "") +
-      (report.duree_extraction_sec != null ? ` + extraction ${report.duree_extraction_sec.toFixed(0)} s` : "") +
+    ? `LLM local${report.modele ? ` ${report.modele}` : ""} · ${report.nb_corrections_ocr ?? 0} valeur(s) corrigée(s)` +
+      (report.duree_extraction_sec != null ? ` · extraction ${report.duree_extraction_sec.toFixed(0)} s` : "") +
       (report.nb_chunks && report.nb_chunks > 1 ? ` · ${report.nb_chunks} segments` : "") +
       (partiel && report.raison ? ` — ${report.raison}` : "")
     : report.statut === "modele_absent"
@@ -249,7 +248,7 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
                             </span>
                           )}
                           {item.correction_ocr && (
-                            <span className="font-medium text-sarcelle">corrigé par le LLM</span>
+                            <span className="font-medium text-sarcelle">valeur corrigée</span>
                           )}
                           {item.moteurs && <span>moteurs : {item.moteurs.ocr ?? "?"} / {item.moteurs.nlp ?? "?"}</span>}
                           {item.source?.passage && (

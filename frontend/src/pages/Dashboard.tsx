@@ -154,7 +154,7 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
               {lastReport.nlp_report && (
                 <span>
                   {lastReport.nlp_report.statut.startsWith("llm")
-                    ? `· LLM local : ${lastReport.nlp_report.nb_corrections_ocr ?? 0} correction(s) OCR`
+                    ? `· LLM local : ${lastReport.nlp_report.nb_corrections_ocr ?? 0} valeur(s) corrigée(s)`
                     : `· ⚠ ${lastReport.nlp_report.statut === "modele_absent"
                         ? "LLM local absent — règles"
                         : `repli règles (${lastReport.nlp_report.raison ?? lastReport.nlp_report.statut})`}`}{" "}
