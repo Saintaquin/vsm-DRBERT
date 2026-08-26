@@ -964,13 +964,19 @@ def extract_entities_llm(
     model_path: str | None = None,
     llm=None,
     corrected_text: str | None = None,
+    segment: int | None = None,
 ) -> list[ExtractedEntity]:  # pragma: no cover — nécessite llama-cpp + GGUF
     """Extraction par LLM local (llama-cpp-python + GGUF, jamais en cloud).
 
     Réutilise l'instance partagée du modèle (singleton — chargée UNE fois par
     processus, cf. src/extraction_nlp/llm.get_llm_instance). Si
     ``corrected_text`` est fourni, l'extraction le lit comme référence mais
-    ancre chaque « passage » dans le texte BRUT (XAI + offsets exacts)."""
+    ancre chaque « passage » dans le texte BRUT (XAI + offsets exacts).
+    ``segment`` (optionnel) identifie le segment de document en cours, pour
+    tracer UNE ligne de log par échec de parsing JSON."""
+    import time
+
+    t0 = time.perf_counter()
     from .llm import get_llm_instance
 
     if llm is None:
@@ -992,7 +998,23 @@ def extract_entities_llm(
             repeat_penalty=1.0,  # une pénalité de répétition pousse à varier → inventer
             max_tokens=800,  # JSON structuré du segment (au-delà → paragraphes)
         )
-    data = _extract_json_llm(out["choices"][0]["message"]["content"])
+    reponse = out["choices"][0]["message"]["content"]
+    try:
+        data = _extract_json_llm(reponse)
+    except Exception as exc:  # noqa: BLE001 - JSON invalide → repli règles en amont
+        # UNE ligne de log par échec de parsing : cause, durée, taille et début
+        # de la réponse — indispensable pour diagnostiquer un petit modèle qui
+        # sort du JSON malformé (ou du texte libre malgré la contrainte JSON).
+        _log.warning(
+            "repli règles | segment=%d | cause=%s | durée=%.1fs | "
+            "longueur_réponse=%d | début=%r",
+            segment if segment is not None else 0,
+            type(exc).__name__,
+            time.perf_counter() - t0,
+            len(reponse or ""),
+            (reponse or "")[:120],
+        )
+        raise
     # Garde-fou AVAL : filtre, reclasse (cures courtes → points_vigilance) et
     # dédoublonne. Rejette toute « valeur » dont le « passage » n'est pas une
     # sous-chaîne exacte du texte source — rend la fuite de few-shot impossible.
@@ -1110,7 +1132,7 @@ def _correction_phase(text: str, llm) -> tuple[str | None, int, float | None]:
 
 
 def _extraction_phase(
-    text: str, llm, corrige: str | None
+    text: str, llm, corrige: str | None, segment: int | None = None
 ) -> tuple[list[ExtractedEntity], float | None]:
     """Phase 2 (extraction structurée VSM) avec son budget dédié. Lève en cas
     d'échec. Retourne (entités, duree_sec)."""
@@ -1125,6 +1147,7 @@ def _extraction_phase(
         text,
         llm=llm,
         corrected_text=corrige,
+        segment=segment,
     )
     if timed_out:
         raise TimeoutError(
@@ -1361,7 +1384,7 @@ def extract_entities_with_report(
 
         # Phase 2 — extraction structurée du segment.
         try:
-            ents, d_extr = _extraction_phase(chunk, llm, corrige)
+            ents, d_extr = _extraction_phase(chunk, llm, corrige, segment=ci + 1)
             if d_extr is not None:
                 total_extr += d_extr
             if ents:

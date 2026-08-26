@@ -430,7 +430,7 @@ def _patch_llm(monkeypatch, ents=None, error=None):
     def correction(text, llm):  # pragma: no cover - test
         return "texte corrigé", 3, 1.5
 
-    def extraction(text, llm, corrige):  # pragma: no cover - test
+    def extraction(text, llm, corrige, segment=None):  # pragma: no cover - test
         if error is not None:
             raise error
         return ents or [], 2.5
@@ -519,7 +519,7 @@ def test_correction_failure_keeps_extraction(monkeypatch):
     def correction_fails(text, llm):  # pragma: no cover - test
         raise RuntimeError("correction OCR indisponible")
 
-    def extraction(text, llm, corrige):  # pragma: no cover - test
+    def extraction(text, llm, corrige, segment=None):  # pragma: no cover - test
         assert corrige is None  # extraction sur texte brut
         return [ExtractedEntity("HTA", "antecedents", 0.9, "HTA", 0, 3)], 1.0
 
@@ -547,7 +547,7 @@ def test_timeout_disables_llm_for_rest_of_document(monkeypatch):
     monkeypatch.setattr(
         ee,
         "_extraction_phase",
-        lambda text, llm, corrige: ([], 0.0),
+        lambda text, llm, corrige, segment=None: ([], 0.0),
     )
     texte = "ANTECEDENTS : Diabete de type 2. " * 10
     ents, report = extract_entities_with_report(texte, engine="llm")
@@ -565,7 +565,7 @@ def test_timeout_does_not_disable_llm_permanently(monkeypatch):
     monkeypatch.setattr(ee, "_correction_phase", lambda text, llm: ("corrigé", 0, 1.0))
     state = {"calls": 0}
 
-    def slow_then_ok(text, llm, corrige):  # pragma: no cover - test
+    def slow_then_ok(text, llm, corrige, segment=None):  # pragma: no cover - test
         state["calls"] += 1
         if state["calls"] == 1:
             raise TimeoutError("délai d'extraction LLM dépassé (300 s)")
