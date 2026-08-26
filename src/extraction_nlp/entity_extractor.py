@@ -64,9 +64,10 @@ class ExtractedEntity:
     offset_debut: int
     offset_fin: int
     moteur_nlp: str = NLP_ENGINE_RULES
-    # True si la « valeur » normalisée diffère du « passage » source brut
-    # (correction OCR par le LLM) — affiché au médecin (XAI).
+    # True si la « valeur » a été corrigée (lexicalement) par rapport au passage.
     correction_ocr: bool = False
+    # Origine de l'entité pour la traçabilité : "llm" | "regles" | "drbert".
+    origine: str = "regles"
 
     def to_champ(self) -> dict:
         d = asdict(self)
@@ -80,6 +81,7 @@ class ExtractedEntity:
             },
             "moteur_nlp": d["moteur_nlp"],
             "correction_ocr": d["correction_ocr"],
+            "origine": d["origine"],
         }
 
 
@@ -462,136 +464,89 @@ def extract_entities_free_text_fallback(
 # brut). La correction est désormais DÉTERMINISTE et appliquée après extraction
 # aux seules « valeur » retenues — voir src/extraction_nlp/correcteur.py.
 # ---------------------------------------------------------------------------
-# Chaque entrée ne contient AUCUN nom de maladie, de médicament ou de facteur
-# de risque susceptible d'être recopié tel quel par un petit modèle (l'ancien
-# « facteurs_risque : tabac, alcool, obésité, sédentarité » a produit à lui
-# seul 4 des 6 hallucinations constatées).
-_LLM_SECTIONS_DEF = {
-    "pathologies_actives": (
-        "maladie ou problème de santé que le patient a ACTUELLEMENT, "
-        "motif de la consultation, diagnostic posé dans ce document"
-    ),
-    "antecedents": (
-        "maladie passée, opération chirurgicale subie, hospitalisation "
-        "antérieure, ou maladie d'un membre de la famille. "
-        "N'y mets rien qui vienne de l'en-tête ou du pied de page"
-    ),
-    "allergies": (
-        "produit auquel le patient est allergique ou intolérant, nommé "
-        "explicitement dans le texte. Si le texte dit qu'il n'y a pas "
-        "d'allergie, ou si le libellé est présent mais suivi de rien, "
-        "laisse la liste vide"
-    ),
-    "traitements_long_cours": (
-        "médicament que le patient prend au long cours. Il faut un NOM de "
-        "médicament écrit dans le texte, un seul par élément, avec sa "
-        "posologie si elle est écrite. "
-        "N'y mets PAS : une famille de médicaments sans nom de produit ; "
-        "un médicament dont le texte précise qu'il est pris pour une durée "
-        "courte ou en cure ; un médicament cité comme protocole, essai ou "
-        "comparaison sans que le patient le prenne ; un appareil ou un "
-        "examen de laboratoire"
-    ),
-    "facteurs_risque": (
-        "ce que le texte dit du mode de vie du patient : consommations, "
-        "poids, activité physique, expositions professionnelles. "
-        "Uniquement si c'est écrit noir sur blanc dans ce document"
-    ),
-    "vaccinations": (
-        "vaccin ou rappel mentionné dans le texte, avec sa date si elle est écrite"
-    ),
-    "points_vigilance": (
-        "conclusion du médecin, recommandation, surveillance à prévoir, "
-        "alerte clinique, ou traitement en cours de durée courte. "
-        "N'y mets pas les résultats chiffrés d'analyses biologiques"
-    ),
+# Étiquettes de rubrique renvoyées par le modèle → clés de section du VSM.
+_R2SECTION = {
+    "patho": "pathologies_actives",
+    "antec": "antecedents",
+    "allerg": "allergies",
+    "traitement": "traitements_long_cours",
+    "risque": "facteurs_risque",
+    "vaccin": "vaccinations",
+    "vigilance": "points_vigilance",
 }
+_VSM_SECTIONS = tuple(_R2SECTION.values())  # les 7 rubriques canoniques
 
 _LLM_SYSTEM = (
-    "Tu remplis un Volet de Synthèse Médicale à partir du texte d'un document "
-    "médical français. Tu recopies des informations du texte : tu n'en ajoutes "
-    "aucune.\n"
-    "SORTIE : uniquement ce JSON, avec ces 7 clés, rien d'autre.\n"
-    '{"pathologies_actives": [], "antecedents": [], "allergies": [], '
-    '"traitements_long_cours": [], "facteurs_risque": [], "vaccinations": [], '
-    '"points_vigilance": []}\n'
-    'Chaque élément d\'une liste s\'écrit {"valeur": "...", "passage": "..."} :\n'
-    '- "passage" = un extrait COPIÉ MOT POUR MOT du texte fourni, entre 3 et '
-    "200 caractères. Si tu ne peux pas le copier depuis le texte, l'élément "
-    "est interdit.\n"
-    '- "valeur" = la même information, orthographe corrigée, 100 caractères '
-    "maximum, UNE seule information par élément.\n"
-    "INTERDITS — n'écris jamais un élément dans ces cas :\n"
-    '1. Le "passage" ne se trouve pas mot pour mot dans le texte fourni.\n'
-    '2. Le "passage" est vide.\n'
-    '3. La "valeur" contient des crochets [ ] ou un pseudonyme.\n'
-    "4. L'extrait vient d'un en-tête, d'un pied de page, d'une adresse, d'un "
-    "numéro de téléphone ou de fax, d'un numéro de dossier, d'une date de "
-    "prélèvement, d'un nom de service, d'un nom de laboratoire, d'un nom "
-    "d'appareil ou d'automate d'analyse, ou d'une mention administrative.\n"
-    "5. L'extrait est un fragment sans sens clinique : un mot isolé, une "
-    "phrase coupée en plein milieu, un reste de libellé sans contenu "
-    "derrière, ou une suite de caractères illisibles.\n"
-    "6. L'extrait est un paragraphe ou plusieurs phrases : un élément = une "
-    "seule information courte.\n"
-    "7. L'information n'est pas écrite dans le texte fourni. Tu n'utilises "
-    "jamais tes connaissances médicales pour compléter, ni le contenu des "
-    "exemples ci-dessous : ils ne montrent que le FORMAT.\n"
-    "Une liste vide est une bonne réponse. Il vaut mieux rendre [] que "
-    "d'écrire un élément douteux : ce document sera lu par un médecin, une "
-    "erreur coûte plus cher qu'un oubli.\n"
-    "RUBRIQUES :\n"
-    + "\n".join(f"   - {k} : {v}" for k, v in _LLM_SECTIONS_DEF.items())
-    + "\n"
-    "AVANT DE RÉPONDRE : relis chaque élément que tu as écrit. Vérifie que "
-    "son \"passage\" figure bien dans le texte, qu'il ne vient pas d'un "
-    "en-tête et qu'il tient en une seule information. Supprime les autres."
+    "Tu lis un extrait de document médical français scanné, avec ses fautes "
+    "d'OCR.\n"
+    "Tu en tires les informations cliniques, et seulement celles qui y sont "
+    "écrites.\n"
+    "RÉPONDS UNIQUEMENT par un objet JSON valide, exactement :\n"
+    '{"items": [{"r": "...", "v": "...", "p": "..."}]}\n'
+    "Si l'extrait ne contient aucune information clinique, réponds exactement : "
+    '{"items": []}\n'
+    '"r" = une seule de ces étiquettes :\n'
+    "patho | antec | allerg | traitement | risque | vaccin | vigilance\n"
+    "\"p\" = un passage COPIÉ MOT POUR MOT depuis l'extrait, fautes d'OCR "
+    'COMPRISES, entre 5 et 150 caractères. Ne corrige rien dans "p".\n'
+    '"v" = la même information, orthographe corrigée, 80 caractères maximum, '
+    "une seule information.\n"
+    "N'ÉCRIS AUCUN ÉLÉMENT pour :\n"
+    "1. un en-tête, une adresse, un téléphone, un fax, un numéro de dossier, "
+    "un nom d'hôpital, de service, de laboratoire ou d'appareil, une date "
+    "d'édition, un numéro de page ;\n"
+    "2. une formule de correspondance : « Cher Confrère », « Bien "
+    "amicalement », « En te remerciant », « Croyez à mes sentiments », "
+    "« Tu trouveras ci-joint » ;\n"
+    "3. un rendez-vous, une convocation, une consultation à programmer ;\n"
+    "4. un résultat chiffré d'analyse biologique ;\n"
+    "5. un mot isolé, une phrase coupée, une suite de caractères illisibles ;\n"
+    "6. une famille de médicaments sans nom de produit ;\n"
+    "7. le nom ou la signature d'un médecin ;\n"
+    "8. tout ce qui n'est pas écrit dans l'extrait fourni.\n"
+    "[] est une réponse fréquente et correcte : la plupart des extraits d'un "
+    "document scanné ne contiennent aucune information clinique. Rendre [] "
+    "vaut mieux qu'écrire un élément douteux — ce document sera lu par un "
+    "médecin, et une erreur coûte plus cher qu'un oubli.\n"
+    "ÉTIQUETTES :\n"
+    "patho      = maladie ou problème de santé actuel, diagnostic posé ici\n"
+    "antec      = maladie passée, opération subie, antécédent familial\n"
+    "allerg     = produit auquel le patient réagit, nommé explicitement\n"
+    "traitement = médicament pris au long cours : il faut un NOM de "
+    "médicament, un seul par élément, avec sa posologie si elle est écrite\n"
+    "risque     = ce que le texte dit des consommations, du poids, de "
+    "l'activité physique, des expositions\n"
+    "vaccin     = vaccin ou rappel, même s'il est seulement à prévoir\n"
+    "vigilance  = conclusion, surveillance à prévoir, alerte clinique, ou "
+    "traitement de durée courte explicitement limitée\n"
 )
 
-_LLM_FEW_SHOT = (
-    "\nExemple 1 — un document sans information exploitable.\n"
-    "Texte :\n"
-    '"CENTRE HOSPITALIER — Sce de Gastro-entérologie\\n'
-    "Tél [TEL_001] — Fax : [TEL_002]\\n"
-    "Dossier n° [DOSSIER_003] — Page 1/2\\n"
-    "Allergie(s) :\\n"
-    "Hémogramme BC-6800 Mindray, Menarini\\n"
-    "Hémoglobine 15,9 g/100mL\\n"
-    'Par contre, comme tu le verras sur"\n'
-    'Réponse : {"pathologies_actives": [], "antecedents": [], "allergies": [], '
-    '"traitements_long_cours": [], "facteurs_risque": [], "vaccinations": [], '
-    '"points_vigilance": []}\n'
-    "\nExemple 2 — un document avec des informations réelles.\n"
-    "Texte :\n"
-    '"ANTECEDENTS : appendicectomie en 1998. Tabagisme actif, 20 cigarettes '
-    "par jour.\\n"
-    "TRAITEMENT DE FOND : OGAST 1 gélule par jour en permanence.\\n"
-    "Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir.\\n"
-    "Allergie(s) : aucune connue.\\n"
-    'CONCLUSION : contrôle endoscopique à prévoir dans deux mois."\n'
-    'Réponse : {"pathologies_actives": [], "antecedents": '
-    '[{"valeur": "Appendicectomie en 1998", "passage": "appendicectomie en '
-    '1998"}], "allergies": [], "traitements_long_cours": '
-    '[{"valeur": "OGAST 1 gélule par jour", "passage": "OGAST 1 gélule par '
-    'jour en permanence"}], "facteurs_risque": [{"valeur": "Tabagisme actif, '
-    '20 cigarettes par jour", "passage": "Tabagisme actif, 20 cigarettes par '
-    'jour"}], "vaccinations": [], "points_vigilance": '
-    '[{"valeur": "Contrôle endoscopique à prévoir dans deux mois", '
-    '"passage": "contrôle endoscopique à prévoir dans deux mois"}, '
-    '{"valeur": "Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir", '
-    '"passage": "Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir"}]}\n'
-)
+_LLM_FEW_SHOT = """
+Exemple 1 — extrait sans information clinique exploitable :
+Extrait : "CENTRE HOSPITALIER — Sce de Gastro-entérologie
+Tél [TEL_001] — Fax : [TEL_002]
+Allergie(s) :
+Hémogramme BC-6800 Mindray"
+Réponse : {"items": []}
+
+Exemple 2 — extrait avec des informations réelles :
+Extrait : "ANTECEDENTS : appendicectomie en 1998. Tabagisme actif, 20 cigarettes par jour.
+TRAITEMENT DE FOND : OGAST 1 gélule par jour en permanence.
+Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir.
+CONCLUSION : contrôle endoscopique à prévoir dans deux mois."
+Réponse : {"items": [{"r": "antec", "v": "Appendicectomie en 1998", "p": "appendicectomie en 1998"}, {"r": "risque", "v": "Tabagisme actif, 20 cigarettes par jour", "p": "Tabagisme actif, 20 cigarettes par jour"}, {"r": "traitement", "v": "OGAST 1 gélule par jour", "p": "OGAST 1 gélule par jour en permanence"}, {"r": "vigilance", "v": "Contrôle endoscopique à prévoir dans deux mois", "p": "contrôle endoscopique à prévoir dans deux mois"}, {"r": "vigilance", "v": "Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir", "p": "Cure de 7 jours : CLAMOXYL 500, 2 gélules matin et soir"}]}
+"""
 
 
 def build_llm_messages(text: str, max_chars: int = 6000) -> list[dict]:
     """Messages système + utilisateur pour l'extraction LLM (fonction pure,
-    testable sans GPU). L'extraction lit le texte OCR BRUT — « passage » doit
-    être reproduit à l'identique depuis ce texte (ancrage XAI) ; « valeur »
-    est la forme normalisée (correction lexicale appliquée en aval)."""
+    testable sans GPU). L'extraction lit le texte OCR BRUT — « p » doit être
+    reproduit à l'identique depuis ce texte (ancrage XAI) ; « v » est la forme
+    normalisée (correction lexicale appliquée en aval)."""
     user = (
-        "Texte OCR du document (extrait) :\n```\n"
+        "Extrait du document :\n```\n"
         + text[:max_chars]
-        + "\n```\nExtrais le JSON des rubriques du VSM en appliquant les règles."
+        + "\n```\nEn appliquant les règles, extrais les informations cliniques."
     )
     return [
         {"role": "system", "content": _LLM_SYSTEM + _LLM_FEW_SHOT},
@@ -655,7 +610,6 @@ _RX_DUREE_COURTE = re.compile(
     r"\b\d+\s*(jours|semaines)\s+de\s+traitement",
     re.I,
 )
-_VSM_SECTIONS = tuple(_LLM_SECTIONS_DEF)
 
 
 def _normalise(texte: str) -> str:
@@ -900,10 +854,23 @@ def extract_entities_llm(
             (reponse or "")[:120],
         )
         raise
+    # Sortie au format {"items": [{"r","v","p"}]} → on normalise en
+    # {rubrique: [{"valeur","passage"}]} via l'adaptateur _R2SECTION.
+    brut: dict[str, list[dict]] = {}
+    brut_items = data.get("items", []) if isinstance(data, dict) else data
+    for item in brut_items if isinstance(brut_items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        section = _R2SECTION.get(str(item.get("r", "")))
+        if section is None:
+            continue
+        brut.setdefault(section, []).append(
+            {"valeur": str(item.get("v", "")), "passage": str(item.get("p", ""))}
+        )
     # Garde-fou AVAL : filtre, reclasse (cures courtes → points_vigilance) et
     # dédoublonne. Rejette toute « valeur » dont le « passage » n'est pas une
     # sous-chaîne exacte du texte source — rend la fuite de few-shot impossible.
-    data = valider_sortie(data, text)
+    data = valider_sortie(brut, text)
     entities = []
     for section, items in data.items():
         for it in items:
@@ -937,6 +904,7 @@ def extract_entities_llm(
                     offset_fin=max(idx, 0) + (length or len(passage_final)),
                     moteur_nlp=NLP_ENGINE_LLM,
                     correction_ocr=(valeur_corrigee != valeur_brut),
+                    origine="llm",
                 )
             )
     return entities
@@ -1002,23 +970,21 @@ def _extraction_phase(
     text: str, llm, segment: int | None = None
 ) -> tuple[list[ExtractedEntity], float | None]:
     """Phase d'extraction structurée VSM (sur le texte BRUT) avec son budget
-    dédié. Lève en cas d'échec. Retourne (entités, duree_sec)."""
+    dédié (court). Lève en cas d'échec. Retourne (entités, duree_sec)."""
     import time
 
-    from .llm import LLM_EXTRACTION_TIMEOUT_SEC
+    from .llm import LLM_TIMEOUT_S
 
     t0 = time.perf_counter()
     ents, timed_out = _run_with_timeout(
         extract_entities_llm,
-        LLM_EXTRACTION_TIMEOUT_SEC,
+        LLM_TIMEOUT_S,
         text,
         llm=llm,
         segment=segment,
     )
     if timed_out:
-        raise TimeoutError(
-            f"délai d'extraction LLM dépassé ({LLM_EXTRACTION_TIMEOUT_SEC} s)"
-        )
+        raise TimeoutError(f"délai d'extraction LLM dépassé ({LLM_TIMEOUT_S} s)")
     return ents or [], round(time.perf_counter() - t0, 3)
 
 
@@ -1037,6 +1003,7 @@ def _drbert_entities_to_extracted(
             offset_debut=d.get("offset_debut", 0),
             offset_fin=d.get("offset_fin", 0),
             moteur_nlp=NLP_ENGINE_DRBERT,
+            origine="drbert",
         )
         for d in added
     ]
@@ -1127,6 +1094,42 @@ def _chunk_text(text: str, max_chars: int, overlap: int = 0) -> list[str]:
     return chunks
 
 
+# ---------------------------------------------------------------------------
+# Filtre de pertinence : ne pas appeler le LLM sur un segment sans intérêt
+# clinique (en-têtes, adresses, formules de politesse). Coût ~1 ms ; supprime
+# du temps de calcul ET des faux positifs. Un segment écarté renvoie RIEN
+# (pas un repli sur les règles — sur un en-tête, la bonne réponse est « rien »,
+# et c'est précisément là que les règles produisent « | Diffusion Médicale »).
+# ---------------------------------------------------------------------------
+_INDICES_CLINIQUES = re.compile(
+    r"\b(antécédent|antecedent|allergi|traitement|ordonnance|diagnostic|"
+    r"pathologi|maladie|opération|operation|chirurgi|vaccin|tabac|alcool|"
+    r"mg\b|ml\b|comprimé|gélule|gelule|posologie|prescri|ulcère|ulcere|"
+    r"hernie|scanner|biopsie|conclusion|surveillance)",
+    re.I,
+)
+_SEGMENT_ADMINISTRATIF = re.compile(
+    r"(cedex|tél|tel |fax|dossier n|page \d|cher confrère|cher confrere|"
+    r"amicalement|en te remerciant|croyez|ci-joint|rdv|hospitalier général)",
+    re.I,
+)
+
+
+def merite_appel_llm(segment: str) -> bool:
+    """Filtre bon marché : un segment sans indice clinique ne vaut pas 45 s."""
+    if len(segment.strip()) < 40:
+        return False
+    if not _INDICES_CLINIQUES.search(segment):
+        return False
+    # Segment purement administratif, sans aucun signal clinique fort.
+    if (
+        _SEGMENT_ADMINISTRATIF.search(segment)
+        and len(_INDICES_CLINIQUES.findall(segment)) < 2
+    ):
+        return False
+    return True
+
+
 def extract_entities_with_report(
     text: str, engine: str = "rules", progress=None
 ) -> tuple[list[ExtractedEntity], dict]:
@@ -1191,16 +1194,33 @@ def extract_entities_with_report(
     llm_ents: list[ExtractedEntity] = []
     rules_ents: list[ExtractedEntity] = []
     n_regles = 0
+    echecs = 0
     total_extr = 0.0
     total_n_corr = 0
     reasons: list[str] = []
 
+    from .llm import ECHECS_MAX, LLM_TIMEOUT_S
+
     for ci, chunk in enumerate(chunks):
         if progress:
             progress(ci + 1, len(chunks))
-        # RE pli PAR SEGMENT, jamais global : un segment trop lent ou en échec
+        # Filtre : pas d'appel LLM sur un segment sans intérêt clinique. La
+        # bonne réponse sur un en-tête est « rien » (les règles y produiraient
+        # « | Diffusion Médicale ») — donc pas de repli règles ici.
+        if not merite_appel_llm(chunk):
+            continue
+        # Coupe-circuit : modèle manifestement indisponible → règles pour le reste.
+        if echecs >= ECHECS_MAX:
+            n_regles += 1
+            rules_ents.extend(
+                extract_entities_free_text_fallback(
+                    chunk, extract_entities_rules(chunk)
+                )
+            )
+            continue
+        # Repli PAR SEGMENT, jamais global : un segment trop lent ou en échec
         # bascule sur les règles pour CE segment, mais les suivants continuent
-        # d'être traités par le LLM (beaucoup sont de courts en-têtes rapides).
+        # d'être traités par le LLM.
         try:
             ents, d_extr = _extraction_phase(chunk, llm, segment=ci + 1)
             if d_extr is not None:
@@ -1215,7 +1235,26 @@ def extract_entities_with_report(
                         chunk, extract_entities_rules(chunk)
                     )
                 )
-        except Exception as exc:  # noqa: BLE001 - repli par segment
+        except TimeoutError:  # noqa: BLE001 - délai dépassé : ce segment seul
+            echecs += 1
+            n_regles += 1
+            reasons.append(f"segment {ci + 1} : délai LLM dépassé ({LLM_TIMEOUT_S} s)")
+            rules_ents.extend(
+                extract_entities_free_text_fallback(
+                    chunk, extract_entities_rules(chunk)
+                )
+            )
+            _log.warning(
+                "segment %d/%d — délai LLM dépassé (%d s) ; ce segment seul passe "
+                "par les règles (échecs : %d/%d)",
+                ci + 1,
+                len(chunks),
+                LLM_TIMEOUT_S,
+                echecs,
+                ECHECS_MAX,
+            )
+        except Exception as exc:  # noqa: BLE001 - erreur : ce segment seul
+            echecs += 1
             n_regles += 1
             reasons.append(f"segment {ci + 1} : {exc}")
             rules_ents.extend(
@@ -1224,14 +1263,18 @@ def extract_entities_with_report(
                 )
             )
             _log.warning(
-                "segment %d/%d — extraction LLM échouée (%s) → règles",
+                "segment %d/%d — extraction LLM échouée (%s) → règles (échecs : %d/%d)",
                 ci + 1,
                 len(chunks),
                 exc,
+                echecs,
+                ECHECS_MAX,
             )
 
     report["nb_corrections_ocr"] = total_n_corr
     report["duree_extraction_sec"] = round(total_extr, 3) if total_extr else None
+    if echecs > 0:
+        reasons.insert(0, f"{echecs} segment(s) en échec (coupe-circuit {ECHECS_MAX})")
 
     if llm_ents:
         # Fusion des segments + dédoublonnage (les entités LLM priment).

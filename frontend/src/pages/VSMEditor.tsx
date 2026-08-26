@@ -251,6 +251,7 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
                             <span className="font-medium text-sarcelle">valeur corrigée</span>
                           )}
                           {item.moteurs && <span>moteurs : {item.moteurs.ocr ?? "?"} / {item.moteurs.nlp ?? "?"}</span>}
+                          {item.origine && <span>origine : {item.origine}</span>}
                           {item.source?.passage && (
                             <button
                               className="text-sarcelle underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle"

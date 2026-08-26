@@ -127,25 +127,25 @@ def test_light_model_for_small_machines():
 
 
 def test_prompt_system_is_structured():
-    # Système de prompt efficace : schéma JSON, interdits en premier, refus par
-    # défaut, few-shot avec un exemple de refus, aucun nom clinique dans les
-    # descriptions de rubriques (anti-hallucination).
+    # Système de prompt efficace (format liste r/v/p) : étiquettes, interdits,
+    # refus par défaut, few-shot avec un exemple de refus, aucun nom clinique
+    # recopiable dans les descriptions (anti-hallucination).
     msgs = build_llm_messages("ANTECEDENTS : Diabete de type 2.", max_chars=2000)
     assert msgs[0]["role"] == "system" and msgs[1]["role"] == "user"
     system = msgs[0]["content"]
-    # schéma JSON strict présent
-    assert '"pathologies_actives"' in system
-    assert '"points_vigilance"' in system
-    # les interdits passent en premier (refus = comportement par défaut)
-    assert "INTERDITS" in system
-    assert "mot pour mot" in system
-    assert "crochets" in system
+    # format liste d'items et étiquettes présents
+    assert '"items"' in system
+    assert "patho | antec | allerg | traitement | risque | vaccin | vigilance" in system
+    # interdits (refus = comportement par défaut)
+    assert "N'ÉCRIS AUCUN ÉLÉMENT" in system
+    assert "COPIÉ MOT POUR MOT" in system
+    assert "fautes d'OCR COMPRISES" in system
     assert "en-tête" in system
-    assert "Une liste vide est une bonne réponse" in system
-    # few-shot : un exemple de REFUS (réponse vide) est intégré
-    assert '"pathologies_actives": [], "antecedents": []' in system
-    # aucune valeur clinique concrète dans les descriptions de rubriques
-    assert "tabac, alcool" not in system  # l'ancien piège à hallucination
+    assert "réponse fréquente et correcte" in system
+    # few-shot : un exemple de REFUS (items vide) est intégré
+    assert '{"items": []}' in system
+    # aucune valeur clinique concrète dans les étiquettes (anti-hallucination)
+    assert "tabac, alcool" not in system  # l'ancien piège
     # le texte utilisateur est tronqué (borne max_chars)
     assert len(msgs[1]["content"]) < 2200
 
@@ -158,15 +158,15 @@ def test_prompt_truncation():
 
 
 def test_extraction_prompt_single_text():
-    # Étape d'extraction : le prompt lit le texte OCR BRUT — « passage » doit
-    # être reproduit tel quel (ancrage XAI), « valeur » normalisée.
+    # Étape d'extraction : le prompt lit le texte OCR BRUT — « p » doit être
+    # reproduit tel quel (ancrage XAI), « v » normalisée.
     msgs = build_llm_messages("ANTECEDENTS : appendicectomie en 1998.", max_chars=2000)
     assert msgs[0]["role"] == "system" and msgs[1]["role"] == "user"
     user = msgs[1]["content"]
     system = msgs[0]["content"]
     assert "appendicectomie en 1998" in user  # le texte est bien transmis
-    assert "passage" in system and "valeur" in system  # clés dans le system prompt
-    assert "INTERDITS" in system
+    assert '"p"' in system and '"v"' in system and '"r"' in system  # clés v4
+    assert "N'ÉCRIS AUCUN ÉLÉMENT" in system
 
 
 def test_correction_lexical_corrige_accents():
@@ -450,7 +450,7 @@ def test_llm_phase_runs_and_reports(monkeypatch):
     ]
     _patch_llm(monkeypatch, ents)
     out, report = extract_entities_with_report(
-        "ANTECEDENTS : Diabete de type 2.", engine="llm"
+        "ANTECEDENTS : Diabete de type 2. Hypertension arterielle.", engine="llm"
     )
     assert [e.valeur for e in out] == ["Diabète de type 2"]
     assert report["statut"] == "llm_complet"
@@ -496,7 +496,7 @@ def test_llm_error_falls_back_to_rules_and_reports(monkeypatch):
     # Erreur d'inférence → règles, avec la raison dans le rapport.
     _patch_llm(monkeypatch, error=RuntimeError("mémoire insuffisante"))
     ents, report = extract_entities_with_report(
-        "ANTECEDENTS : Diabete de type 2.", engine="llm"
+        "ANTECEDENTS : Diabete de type 2. Hypertension arterielle.", engine="llm"
     )
     assert any(e.section == "antecedents" for e in ents)
     assert report["statut"] == "repli_regles"
@@ -509,7 +509,7 @@ def test_segment_failure_falls_back_per_segment_not_global(monkeypatch):
     # courts en-têtes rapides qu'on ne doit pas condamner).
     monkeypatch.setattr(llm_mod, "llm_attemptable", lambda: True)
     monkeypatch.setattr(ee, "_charger_modele", lambda report: "dummy-model")
-    monkeypatch.setattr(llm_mod, "LLM_CHUNK_CHARS", 30)  # force plusieurs segments
+    monkeypatch.setattr(llm_mod, "LLM_CHUNK_CHARS", 200)  # force plusieurs segments
     state = {"calls": 0}
 
     def extraction(text, llm, segment=None):  # pragma: no cover - test
@@ -519,7 +519,7 @@ def test_segment_failure_falls_back_per_segment_not_global(monkeypatch):
         return [ExtractedEntity("HTA", "antecedents", 0.9, "HTA", 0, 3)], 1.0
 
     monkeypatch.setattr(ee, "_extraction_phase", extraction)
-    texte = "ANTECEDENTS : Diabete de type 2. HTA." * 5
+    texte = "ANTECEDENTS : Diabete de type 2. HTA. Hypertension arterielle. " * 30
     ents, report = extract_entities_with_report(texte, engine="llm")
     assert report["nb_chunks"] > 1
     # le segment 2 a bien été traité par le LLM (retenté), pas désactivé globalement
@@ -543,10 +543,14 @@ def test_timeout_falls_back_per_segment_and_continues(monkeypatch):
         return [ExtractedEntity("HTA", "antecedents", 0.9, "HTA", 0, 3)], 1.0
 
     monkeypatch.setattr(ee, "_extraction_phase", slow_then_ok)
-    _, report1 = extract_entities_with_report("ANTECEDENTS : HTA.", engine="llm")
+    _, report1 = extract_entities_with_report(
+        "ANTECEDENTS : HTA. Hypertension arterielle.", engine="llm"
+    )
     assert report1["statut"] == "repli_regles"
     # second document de la session : le LLM est RETENTÉ et réussit
-    ents2, report2 = extract_entities_with_report("ANTECEDENTS : HTA.", engine="llm")
+    ents2, report2 = extract_entities_with_report(
+        "ANTECEDENTS : HTA. Hypertension arterielle.", engine="llm"
+    )
     assert [e.valeur for e in ents2] == ["HTA"]
     assert report2["statut"] == "llm_complet"
 
@@ -555,7 +559,9 @@ def test_llm_non_empty_result_is_kept(monkeypatch):
     # Si le LLM trouve du contenu, il est conservé tel quel (pas de règles).
     ents = [ExtractedEntity("Malaise", "points_vigilance", 0.9, "Malaise", 0, 6)]
     _patch_llm(monkeypatch, ents)
-    out, report = extract_entities_with_report("Malaise au réveil.", engine="llm")
+    out, report = extract_entities_with_report(
+        "CONCLUSION : Malaise au réveil. Surveillance à prévoir.", engine="llm"
+    )
     assert len(out) == 1 and out[0].section == "points_vigilance"
     assert report["moteur"] == NLP_ENGINE_LLM
 

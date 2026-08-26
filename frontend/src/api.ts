@@ -37,6 +37,7 @@ export interface ChampTrace {
   moteurs?: { ocr?: string; nlp?: string };
   moteur_nlp?: string;
   correction_ocr?: boolean;
+  origine?: "llm" | "regles" | "drbert" | string;
   code_normalise?: { systeme: string; code: string; libelle: string } | null;
 }
 /** Rapport de la phase NLP/LLM locale (XAI) — rempli par le backend. */

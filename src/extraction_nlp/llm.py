@@ -245,26 +245,22 @@ def available_ram_gb() -> float:
 _LLM_RAM_MARGIN_GB = 1.5
 
 # ---------------------------------------------------------------------------
-# Budgets temporels SÉPARÉS (correction du « LLM jamais effectif sur PC lent ») :
-# l'ancien budget unique (chargement + inférence en 300 s) était dépassé par le
-# SEUL chargement du GGUF sur les machines lentes → repli règles définitif.
-# Désormais : le chargement n'a lieu qu'UNE FOIS par processus (singleton) avec
-# son propre budget ; la correction OCR et l'extraction ont chacune le leur.
-# Un dépassement ne désactive JAMAIS le LLM pour la suite de la session.
+# Budgets temporels SÉPARÉS. Le chargement n'a lieu qu'UNE FOIS par processus
+# (singleton) ; un dépassement sur un segment ne désactive JAMAIS le LLM pour
+# la session — le segment concerné bascule sur les règles.
 # ---------------------------------------------------------------------------
 # Délai maximal d'une inférence LLM en secondes (configurable) — historique.
 LLM_INFERENCE_TIMEOUT_SEC = int(os.environ.get("VSM_LLM_TIMEOUT_SEC", "300"))
 # Budget de CHARGEMENT du modèle (premier document uniquement, singleton ensuite).
 LLM_LOAD_TIMEOUT_SEC = int(os.environ.get("VSM_LLM_LOAD_TIMEOUT_SEC", "900"))
-# Budget de la phase « correction OCR » (1er appel LLM par document).
-LLM_CORRECTION_TIMEOUT_SEC = int(
-    os.environ.get("VSM_LLM_CORRECTION_TIMEOUT_SEC", "300")
-)
-# Budget de la phase « extraction structurée VSM » (2e appel LLM par document).
-# Légèrement supérieur : l'extraction reçoit brut + corrigé (2× le texte).
-LLM_EXTRACTION_TIMEOUT_SEC = int(
-    os.environ.get("VSM_LLM_EXTRACTION_TIMEOUT_SEC", "360")
-)
+# Budget d'EXTRACTION d'un SEGMENT : court (45 s) — un segment lent est un
+# segment perdu, pas une raison d'arrêter le LLM (repli par segment).
+# NB : sur un CPU très lent, un segment clinique peut dépasser 45 s — relever
+# VSM_LLM_TIMEOUT_S si besoin ; le coupe-circuit ECHECS_MAX borne le pire cas.
+LLM_TIMEOUT_S = int(os.environ.get("VSM_LLM_TIMEOUT_S", "45"))
+# Coupe-circuit : au-delà de ce nombre de segments consécutifs en échec, on
+# cesse d'appeler le LLM (modèle vraiment indisponible) → règles pour le reste.
+ECHECS_MAX = int(os.environ.get("VSM_ECHECS_MAX", "15"))
 
 # ---------------------------------------------------------------------------
 # Singleton du modèle : le GGUF (≈ 2 Go) est chargé UNE SEULE FOIS par
