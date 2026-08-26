@@ -126,6 +126,19 @@ def test_light_model_for_small_machines():
     assert any(m["key"] == "qwen2.5-1.5b" for m in llm_mod.RECOMMENDED_MODELS)
 
 
+def test_inference_tuning_defaults():
+    # Réglages d'inférence explicites (critique perf) : n_threads = cœurs
+    # physiques, n_batch ≥ 512 (défaut bas = catastrophique), contexte borné.
+    assert llm_mod._physical_cores() >= 1
+    assert llm_mod.LLM_N_BATCH >= 512
+    assert llm_mod.LLM_N_CTX <= 8192
+
+
+def test_model_quant_warning_empty_without_model(monkeypatch):
+    monkeypatch.setattr(llm_mod, "model_available", lambda: False)
+    assert llm_mod.model_quant_warning() == ""
+
+
 def test_prompt_system_is_structured():
     # Système de prompt efficace (format liste r/v/p) : étiquettes, interdits,
     # refus par défaut, few-shot avec un exemple de refus, aucun nom clinique

@@ -17,6 +17,7 @@ pillow>=10.2
 numpy>=1.26
 reportlab>=4.1                 # rendu PDF du VSM
 jiwer>=3.0                     # CER/WER pour le benchmark
+psutil>=5.9                    # cœurs PHYSIQUES (llama.cpp n_threads)
 llama-cpp-python>=0.2          # moteur NLP LLM local OBLIGATOIRE (phase LLM
                                # par document : correction OCR + extraction ;
                                # roue CPU précompilée via l'index ci-dessus —

@@ -272,6 +272,29 @@ ECHECS_MAX = int(os.environ.get("VSM_ECHECS_MAX", "15"))
 # Taille du contexte (configurable) : 8192 par défaut — l'extraction reçoit le
 # texte brut ET le texte corrigé (≈ 12 000 caractères au total).
 LLM_N_CTX = int(os.environ.get("VSM_LLM_N_CTX", "8192"))
+# Taille de lot du traitement du prompt (configurable). Le défaut est très bas
+# (8) sur certains bindings llama-cpp → catastrophique ; on le fixe explicitement
+# à 512 (évaluation du prompt par lots plus grands = plus rapide).
+LLM_N_BATCH = int(os.environ.get("VSM_LLM_N_BATCH", "512"))
+
+
+def _physical_cores() -> int:
+    """Nombre de cœurs PHYSIQUES — llama.cpp : ``n_threads`` doit valoir le
+    nombre de cœurs physiques (les threads "logiques"/hyperthreads n'apportent
+    pas de calcul et dégradent le cache). Utilise psutil si présent, sinon
+    repli sur le nombre de processeurs logiques."""
+    try:
+        import psutil  # noqa: PLC0415 - dépendance optionnelle
+
+        n = psutil.cpu_count(logical=False)
+        if n and n > 0:
+            return n
+    except Exception:  # noqa: BLE001 - psutil absent ou erreur
+        pass
+    # Windows : nombre logique (souvent 2× le physique) ; repli acceptable à
+    # défaut de psutil. Une fois psutil installé, le compte physique est exact.
+    return os.cpu_count() or 4
+
 
 _LLM_STATE: dict = {
     "model": None,  # instance llama_cpp.Llama partagée (ou None)
@@ -295,31 +318,145 @@ LLM_CHUNK_CHARS = int(os.environ.get("VSM_LLM_CHUNK_CHARS", "1200"))
 LLM_CHUNK_OVERLAP = int(os.environ.get("VSM_LLM_CHUNK_OVERLAP", "150"))
 
 
+# --- Vérification de quantification GGUF (avant chargement) ------------------
+# Un modèle Q8/F16 sur CPU coûte 2 à 4× plus cher qu'un Q4_K_M. On relaie les
+# types de blocs des poids pour avertir (et non bloquer) si le modèle n'est pas
+# un quant 4-bit K.
+_GGUF_QUANT_LABELS = {
+    0: "F32",
+    1: "F16",
+    2: "Q4_0",
+    3: "Q4_1",
+    6: "Q5_0",
+    7: "Q5_1",
+    8: "Q8_0",
+    9: "Q8_1",
+    10: "Q2_K",
+    11: "Q3_K",
+    12: "Q4_K",
+    13: "Q5_K",
+    14: "Q6_K",
+    15: "Q8_K",
+}
+_GGUF_FTYPE_LABELS = {
+    0: "ALL_F32",
+    1: "MOSTLY_F16",
+    2: "MOSTLY_Q4_0",
+    3: "MOSTLY_Q4_1",
+    7: "MOSTLY_Q8_0",
+    10: "MOSTLY_Q2_K",
+    11: "MOSTLY_Q3_K",
+    12: "MOSTLY_Q4_K",
+    13: "MOSTLY_Q5_K",
+    14: "MOSTLY_Q6_K",
+    15: "MOSTLY_Q8_K",
+    16: "GPU_CHECK",
+    17: "UNKNOWN",
+}
+
+
+def _gguf_tensor_quants(path: Path) -> dict[int, int]:
+    """Compte des types de blocs (quantification) des tenseurs d'un GGUF."""
+    import struct
+
+    quants: dict[int, int] = {}
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(28)
+            if head[0:4] != b"GGUF":
+                return quants
+            _ver, tensor_count, kv_count = struct.unpack_from("<IQQ", head, 4)
+
+            def _len(b: bytes) -> int:
+                return struct.unpack_from("<Q", b)[0]
+
+            # métadonnées (à sauter). Types GGUF : 0..12.
+            def _skip_val(t: int, fh) -> None:
+                if t in (0, 1, 7):
+                    fh.read(1)
+                elif t in (2, 3):
+                    fh.read(2)
+                elif t in (4, 5, 6):
+                    fh.read(4)
+                elif t == 8:
+                    n = _len(fh.read(8))
+                    fh.read(n)
+                elif t == 9:
+                    at = struct.unpack("<I", fh.read(4))[0]
+                    n = struct.unpack("<Q", fh.read(8))[0]
+                    for _ in range(n):
+                        _skip_val(at, fh)
+                elif t in (10, 11, 12):
+                    fh.read(8)
+
+            for _ in range(kv_count):
+                n = _len(fh.read(8))
+                fh.read(n)  # clé
+                t = struct.unpack("<I", fh.read(4))[0]
+                _skip_val(t, fh)
+            # infos de tenseurs
+            for _ in range(tensor_count):
+                n = _len(fh.read(8))
+                fh.read(n)  # nom
+                nd = struct.unpack("<I", fh.read(4))[0]
+                fh.read(nd * 8)  # dimensions
+                bt = struct.unpack("<I", fh.read(4))[0]  # type de bloc
+                fh.read(8)  # offset
+                quants[bt] = quants.get(bt, 0) + 1
+    except Exception:  # noqa: BLE001 - best-effort, ne bloque jamais le chargement
+        return {}
+    return quants
+
+
+def model_quant_warning() -> str:
+    """Avertissement (non bloquant) si le modèle n'est pas un quant 4-bit K."""
+    if not model_available():
+        return ""
+    quants = _gguf_tensor_quants(default_model_path())
+    if not quants:
+        return ""
+    dominant = max(quants, key=quants.get)
+    label = _GGUF_QUANT_LABELS.get(dominant, f"type {dominant}")
+    if dominant in (12,) or label.startswith("Q4_"):
+        return ""  # Q4_K (M/S) — optimal sur CPU
+    return (
+        f"Modèle quantifié en {label} (dominant) au lieu de Q4_K_M : "
+        "un Q8/F16 coûte 2 à 4× plus de calcul sur CPU. "
+        "Téléchargez un GGUF Q4_K_M (python -m src.extraction_nlp.llm --model qwen2.5-1.5b --force)."
+    )
+
+
 def _do_load_model() -> None:
     """Charge le GGUF (thread dédié) — une seule fois par processus."""
+    import logging
+
     try:
         from llama_cpp import Llama
 
         path = str(default_model_path())
         t0 = time.perf_counter()
-        # Réglages CPU conservateurs (machines lentes sans GPU) : threads =
-        # cœurs, batch 512 (meilleur débit CPU que le défaut).
+        # Réglages CPU (machines lentes sans GPU) : threads = cœurs PHYSIQUES,
+        # batch explicite (512 ; un défaut bas = catastrophique), contexte borné.
+        avis = model_quant_warning()
+        if avis:
+            logging.getLogger("vsm").warning("LLM — %s", avis)
         model = Llama(
             model_path=path,
             n_ctx=LLM_N_CTX,
-            n_threads=os.cpu_count() or 4,
-            n_batch=1024,  # évaluation du prompt par lots plus grands (plus rapide)
+            n_threads=_physical_cores(),
+            n_batch=LLM_N_BATCH,
             verbose=False,
         )
         with _LLM_LOCK:
             _LLM_STATE["model"] = model
             _LLM_STATE["name"] = Path(path).name
-        import logging
-
         logging.getLogger("vsm").info(
-            "modèle LLM chargé en %.1f s (%s)",
+            "modèle LLM chargé en %.1f s (%s) · threads=%d · batch=%d · ctx=%d",
             time.perf_counter() - t0,
             Path(path).name,
+            _physical_cores(),
+            LLM_N_BATCH,
+            LLM_N_CTX,
         )
     except Exception as exc:  # noqa: BLE001 - rapporté à l'appelant
         with _LLM_LOCK:

@@ -824,7 +824,15 @@ def extract_entities_llm(
         if model_path:
             from llama_cpp import Llama
 
-            llm = Llama(model_path=model_path, n_ctx=4096, verbose=False)
+            from .llm import LLM_N_BATCH, LLM_N_CTX, _physical_cores
+
+            llm = Llama(
+                model_path=model_path,
+                n_ctx=LLM_N_CTX,
+                n_threads=_physical_cores(),
+                n_batch=LLM_N_BATCH,
+                verbose=False,
+            )
         else:
             llm = get_llm_instance()
     from .llm import LLM_INFERENCE_LOCK
@@ -835,7 +843,7 @@ def extract_entities_llm(
             response_format={"type": "json_object"},
             temperature=0.0,
             repeat_penalty=1.0,  # une pénalité de répétition pousse à varier → inventer
-            max_tokens=800,  # JSON structuré du segment (au-delà → paragraphes)
+            max_tokens=512,  # JSON du segment (sans limite, une génération qui déraille → timeout)
         )
     reponse = out["choices"][0]["message"]["content"]
     try:
