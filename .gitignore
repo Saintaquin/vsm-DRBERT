@@ -12,6 +12,9 @@ outputs/
 *.gguf
 *.pt
 *.onnx
+# Modèles NER téléchargés localement (DrBERT-CASM2, exports ONNX) — jamais
+# commités : vendorisés dans l'installeur par packaging/fetch_models.py.
+models/
 .pytest_cache/
 .ruff_cache/
 frontend/tsconfig.tsbuildinfo
