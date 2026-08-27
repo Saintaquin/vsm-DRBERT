@@ -485,6 +485,8 @@ _LLM_SYSTEM = (
     '{"items": [{"r": "...", "v": "...", "p": "..."}]}\n'
     "Si l'extrait ne contient aucune information clinique, réponds exactement : "
     '{"items": []}\n'
+    "Maximum 8 éléments par réponse. S'il y en a plus, garde les 8 plus "
+    "importants : la réponse doit rester courte.\n"
     '"r" = une seule de ces étiquettes :\n'
     "patho | antec | allerg | traitement | risque | vaccin | vigilance\n"
     "\"p\" = un passage COPIÉ MOT POUR MOT depuis l'extrait, fautes d'OCR "
@@ -552,6 +554,86 @@ def build_llm_messages(text: str, max_chars: int = 6000) -> list[dict]:
         {"role": "system", "content": _LLM_SYSTEM + _LLM_FEW_SHOT},
         {"role": "user", "content": user},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Génération contrainte : la sortie du LLM est pilotée par une GRAMMAIRE GBNF
+# (dérivée de ce schéma JSON) et lue en STREAMING. Le modèle ne peut donc
+# JAMAIS produire de JSON invalide (fini les « Expecting ',' delimiter »), et
+# la génération s'arrête dès que le JSON est complet — plus de threads
+# orphelins qui gardent le verrou du modèle après un dépassement de délai.
+# ---------------------------------------------------------------------------
+_LLM_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "r": {"type": "string"},
+                    "v": {"type": "string"},
+                    "p": {"type": "string"},
+                },
+                "required": ["r", "v", "p"],
+            },
+        },
+    },
+    "required": ["items"],
+}
+_LLM_GRAMMAR_CACHE = None
+
+
+def _llm_output_grammar():
+    """Grammaire GBNF de la sortie (générée UNE fois par processus)."""
+    global _LLM_GRAMMAR_CACHE
+    if _LLM_GRAMMAR_CACHE is None:
+        import json as _json
+
+        from llama_cpp import LlamaGrammar
+
+        _LLM_GRAMMAR_CACHE = LlamaGrammar.from_json_schema(
+            _json.dumps(_LLM_OUTPUT_SCHEMA)
+        )
+    return _LLM_GRAMMAR_CACHE
+
+
+def _repair_truncated_json(buf: str) -> dict | None:
+    """Répare une réponse tronquée (génération arrêtée au délai ou à la limite).
+
+    La grammaire garantit que ``buf`` est un PREFIXE valide du schéma : on
+    ferme les structures manquantes, et si le dernier item est incomplet, on
+    le coupe. Retourne le dict parsé, ou None si rien n'est récupérable."""
+    import json
+
+    buf = buf.strip()
+    if not buf:
+        return None
+    try:
+        return json.loads(buf)
+    except json.JSONDecodeError:
+        pass
+    base = buf.rstrip(", \t\r\n")
+    # fermetures possibles : fin après le dernier item complet
+    for closer in ("]}]}", "]}]", "]}"):
+        try:
+            return json.loads(base + closer)
+        except json.JSONDecodeError:
+            continue
+    # tronqué au milieu d'une chaîne (nombre impair de guillemets)
+    if base.count('"') % 2 == 1:
+        try:
+            return json.loads(base + '"}]}')
+        except json.JSONDecodeError:
+            pass
+    # couper au dernier item COMPLET (le dernier item est tronqué)
+    cut = base.rfind("}, {")
+    if cut != -1:
+        try:
+            return json.loads(base[: cut + 1] + "]}")
+        except json.JSONDecodeError:
+            pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -804,21 +886,23 @@ def extract_entities_llm(
     model_path: str | None = None,
     llm=None,
     segment: int | None = None,
+    timeout: float | None = None,
 ) -> list[ExtractedEntity]:  # pragma: no cover — nécessite llama-cpp + GGUF
     """Extraction par LLM local (llama-cpp-python + GGUF, jamais en cloud).
 
     Réutilise l'instance partagée du modèle (singleton — chargée UNE fois par
-    processus, cf. src/extraction_nlp/llm.get_llm_instance). L'extraction lit
-    le texte BRUT : chaque « passage » est une sous-chaîne exacte du texte
-    source (ancrage XAI préservé). La « valeur » est ensuite corrigée
-    lexicalement (déterminisme, cf. src/extraction_nlp/correcteur.py).
-    ``segment`` (optionnel) identifie le segment en cours, pour tracer UNE
-    ligne de log par échec de parsing JSON."""
+    processus, cf. src/extraction_nlp/llm.get_llm_instance). La génération est
+    en STREAMING avec grammaire GBNF : le modèle ne peut pas sortir de JSON
+    invalide, et la génération s'arrête dès que le JSON est complet — pas de
+    threads orphelins gardant le verrou après le délai. ``segment`` identifie
+    le segment en cours (ligne de log par échec de parsing). Lève TimeoutError
+    si le délai est dépassé SANS rien produire d'exploitable."""
+    import json
     import time
 
     t0 = time.perf_counter()
     from .correcteur import corriger_lexical
-    from .llm import get_llm_instance
+    from .llm import LLM_TIMEOUT_S, get_llm_instance
 
     if llm is None:
         if model_path:
@@ -837,35 +921,54 @@ def extract_entities_llm(
             llm = get_llm_instance()
     from .llm import LLM_INFERENCE_LOCK
 
+    deadline = t0 + (timeout if timeout is not None else LLM_TIMEOUT_S)
+    buf = ""
+    timed_out = False
     with LLM_INFERENCE_LOCK:  # le modèle partagé n'est pas thread-safe
-        out = llm.create_chat_completion(
+        stream = llm.create_chat_completion(
             messages=build_llm_messages(text),
-            response_format={"type": "json_object"},
+            grammar=_llm_output_grammar(),
             temperature=0.0,
             repeat_penalty=1.0,  # une pénalité de répétition pousse à varier → inventer
-            max_tokens=512,  # JSON du segment (sans limite, une génération qui déraille → timeout)
+            max_tokens=512,  # borne dure (le JSON complet s'arrête bien avant)
+            stream=True,
         )
-    reponse = out["choices"][0]["message"]["content"]
-    try:
-        data = _extract_json_llm(reponse)
-    except Exception as exc:  # noqa: BLE001 - JSON invalide → repli règles en amont
+        for chunk in stream:
+            buf += chunk["choices"][0]["delta"].get("content") or ""
+            # Arrêt précoce : dès que le JSON est complet et valide, on coupe
+            # la génération (économie de tokens ET de temps).
+            try:
+                json.loads(buf.strip())
+                break
+            except json.JSONDecodeError:
+                pass
+            if time.perf_counter() > deadline:
+                timed_out = True
+                break
+            if len(buf) > 3000:  # ceinture de sécurité
+                break
+    data = _repair_truncated_json(buf)
+    if data is None or not isinstance(data, dict) or "items" not in data:
         # UNE ligne de log par échec de parsing : cause, durée, taille et début
-        # de la réponse — indispensable pour diagnostiquer un petit modèle qui
-        # sort du JSON malformé (ou du texte libre malgré la contrainte JSON).
+        # de la réponse — la grammaire rend ce cas très rare (réponse illisible).
         _log.warning(
             "repli règles | segment=%d | cause=%s | durée=%.1fs | "
             "longueur_réponse=%d | début=%r",
             segment if segment is not None else 0,
-            type(exc).__name__,
+            "JSONDecodeError",
             time.perf_counter() - t0,
-            len(reponse or ""),
-            (reponse or "")[:120],
+            len(buf),
+            buf[:120],
         )
-        raise
+        raise json.JSONDecodeError("réponse illisible", buf, 0)
+    if timed_out and not data.get("items"):
+        raise TimeoutError(
+            f"délai d'extraction LLM dépassé ({LLM_TIMEOUT_S} s) sans résultat exploitable"
+        )
     # Sortie au format {"items": [{"r","v","p"}]} → on normalise en
     # {rubrique: [{"valeur","passage"}]} via l'adaptateur _R2SECTION.
     brut: dict[str, list[dict]] = {}
-    brut_items = data.get("items", []) if isinstance(data, dict) else data
+    brut_items = data.get("items", [])
     for item in brut_items if isinstance(brut_items, list) else []:
         if not isinstance(item, dict):
             continue
@@ -977,22 +1080,16 @@ def _charger_modele(report: dict):
 def _extraction_phase(
     text: str, llm, segment: int | None = None
 ) -> tuple[list[ExtractedEntity], float | None]:
-    """Phase d'extraction structurée VSM (sur le texte BRUT) avec son budget
-    dédié (court). Lève en cas d'échec. Retourne (entités, duree_sec)."""
+    """Phase d'extraction structurée VSM (sur le texte BRUT).
+
+    L'appel est SYNCHRONE : le délai est appliqué DANS la génération (streaming
+    avec arrêt) — plus de thread orphelin qui continue en arrière-plan et garde
+    le verrou du modèle après le dépassement. Lève TimeoutError en cas de délai
+    sans résultat exploitable. Retourne (entités, duree_sec)."""
     import time
 
-    from .llm import LLM_TIMEOUT_S
-
     t0 = time.perf_counter()
-    ents, timed_out = _run_with_timeout(
-        extract_entities_llm,
-        LLM_TIMEOUT_S,
-        text,
-        llm=llm,
-        segment=segment,
-    )
-    if timed_out:
-        raise TimeoutError(f"délai d'extraction LLM dépassé ({LLM_TIMEOUT_S} s)")
+    ents = extract_entities_llm(text, llm=llm, segment=segment)
     return ents or [], round(time.perf_counter() - t0, 3)
 
 

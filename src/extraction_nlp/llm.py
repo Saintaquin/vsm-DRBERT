@@ -253,11 +253,11 @@ _LLM_RAM_MARGIN_GB = 1.5
 LLM_INFERENCE_TIMEOUT_SEC = int(os.environ.get("VSM_LLM_TIMEOUT_SEC", "300"))
 # Budget de CHARGEMENT du modèle (premier document uniquement, singleton ensuite).
 LLM_LOAD_TIMEOUT_SEC = int(os.environ.get("VSM_LLM_LOAD_TIMEOUT_SEC", "900"))
-# Budget d'EXTRACTION d'un SEGMENT : court (45 s) — un segment lent est un
-# segment perdu, pas une raison d'arrêter le LLM (repli par segment).
-# NB : sur un CPU très lent, un segment clinique peut dépasser 45 s — relever
-# VSM_LLM_TIMEOUT_S si besoin ; le coupe-circuit ECHECS_MAX borne le pire cas.
-LLM_TIMEOUT_S = int(os.environ.get("VSM_LLM_TIMEOUT_S", "45"))
+# Budget d'EXTRACTION d'un SEGMENT. La génération est en STREAMING avec arrêt
+# dès que le JSON est complet (grammaire) : le délai couvre surtout l'évaluation
+# du prompt (~1-2 min sur un CPU lent) + la génération des ≤ 8 items. Un segment
+# qui dépasse le délai est un segment perdu (repli règles), jamais un blocage.
+LLM_TIMEOUT_S = int(os.environ.get("VSM_LLM_TIMEOUT_S", "150"))
 # Coupe-circuit : au-delà de ce nombre de segments consécutifs en échec, on
 # cesse d'appeler le LLM (modèle vraiment indisponible) → règles pour le reste.
 ECHECS_MAX = int(os.environ.get("VSM_ECHECS_MAX", "15"))
@@ -310,11 +310,9 @@ _LLM_LOCK = threading.Lock()
 LLM_INFERENCE_LOCK = threading.Lock()
 # Taille maximale d'un SEGMENT de texte OCR envoyé au LLM (caractères). Les
 # gros documents sont découpés et traités segment par segment : chaque
-# inférence reste bornée en temps, même sur un CPU lent sans GPU.
-# 1200 caractères ≈ une fenêtre confortable pour un petit modèle (1,5B) sans
-# dépasser les budgets de temps ; les segments se recouvrent de
-# LLM_CHUNK_OVERLAP caractères pour ne pas couper une information en deux.
-LLM_CHUNK_CHARS = int(os.environ.get("VSM_LLM_CHUNK_CHARS", "1200"))
+# inférence reste bornée en temps ET en taille de sortie (peu d'items par
+# segment → sortie JSON courte, génération rapide, pas de troncature).
+LLM_CHUNK_CHARS = int(os.environ.get("VSM_LLM_CHUNK_CHARS", "800"))
 LLM_CHUNK_OVERLAP = int(os.environ.get("VSM_LLM_CHUNK_OVERLAP", "150"))
 
 

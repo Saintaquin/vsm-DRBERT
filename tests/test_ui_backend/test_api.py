@@ -129,6 +129,8 @@ def test_full_flow(client, tmp_path):
 def test_process_async_flow(client, tmp_path):
     # Le POST /process répond immédiatement (job_id) ; l'état évolue
     # processing → done ; le VSM est visible dès la fin (sans reconnexion).
+    # NB : on POLLE le job lancé (un second POST sur le même document est
+    # désormais refusé : 409 anti double-traitement).
     headers = _login(client)
     from PIL import Image
 
@@ -148,12 +150,52 @@ def test_process_async_flow(client, tmp_path):
     assert r.status_code == 200
     job_id = r.json()["job_id"]
     assert r.json()["status"] == "processing"
-    result = _process_and_wait(
-        client, headers, doc_id, engine="tesseract", anonymize_mode="pseudo"
-    )
+    import time
+
+    deadline = time.time() + 120
+    result = None
+    while time.time() < deadline:
+        job = client.get(f"/documents/process/{job_id}", headers=headers).json()
+        if job["status"] == "done":
+            result = job["result"]
+            break
+        if job["status"] == "error":
+            raise AssertionError(f"traitement en échec : {job['error']}")
+        time.sleep(0.5)
+    assert result is not None, "délai dépassé pour le traitement asynchrone"
     # visible dans la liste SANS nouvelle session
     vsms = client.get("/vsm", headers=headers).json()
     assert any(v["id"] == result["vsm_id"] for v in vsms)
+
+
+def test_process_duplicate_job_rejected(client, tmp_path):
+    # Anti double-traitement : un second POST /process sur le même document
+    # pendant qu'un job tourne → 409 (deux jobs concurrents se disputent le
+    # modèle et gâchent des heures de génération).
+    headers = _login(client)
+    from PIL import Image
+
+    p = tmp_path / "mini.png"
+    Image.new("L", (60, 60), 255).save(p)
+    up = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("mini.png", p.read_bytes(), "image/png")},
+    )
+    doc_id = up.json()["document_id"]
+    r1 = client.post(
+        f"/documents/{doc_id}/process",
+        headers=headers,
+        json={"engine": "tesseract", "anonymize_mode": "pseudo"},
+    )
+    assert r1.status_code == 200
+    r2 = client.post(
+        f"/documents/{doc_id}/process",
+        headers=headers,
+        json={"engine": "tesseract", "anonymize_mode": "pseudo"},
+    )
+    assert r2.status_code == 409
+    assert "déjà en cours" in r2.json()["detail"]
 
 
 def test_passage_source_document_id_coherent(client, tmp_path):
@@ -314,9 +356,20 @@ def test_process_default_nlp_engine_is_llm_with_fallback(client, tmp_path):
         json={"engine": "tesseract", "anonymize_mode": "pseudo"},
     )
     assert r.status_code == 200
-    result = _process_and_wait(
-        client, headers, doc_id, engine="tesseract", anonymize_mode="pseudo"
-    )
+    job_id = r.json()["job_id"]
+    import time
+
+    deadline = time.time() + 120
+    result = None
+    while time.time() < deadline:
+        job = client.get(f"/documents/process/{job_id}", headers=headers).json()
+        if job["status"] == "done":
+            result = job["result"]
+            break
+        if job["status"] == "error":
+            raise AssertionError(f"traitement en échec : {job['error']}")
+        time.sleep(0.5)
+    assert result is not None
     assert result["vsm_id"]
     vsm = client.get(f"/vsm/{result['vsm_id']}", headers=headers).json()
     assert vsm["provenance"]["moteur_nlp"] == "rules-fr-v1"  # repli automatique

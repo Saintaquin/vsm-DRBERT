@@ -368,6 +368,34 @@ def test_valider_rejette_fusion_deux_medicaments():
     assert propre["traitements_long_cours"] == []
 
 
+def test_repair_truncated_json_complete():
+    # Réponse complète → retournée telle quelle.
+    buf = '{"items": [{"r": "patho", "v": "x", "p": "x"}]}'
+    assert ee._repair_truncated_json(buf) == {"items": [{"r": "patho", "v": "x", "p": "x"}]}
+
+
+def test_repair_truncated_json_after_item():
+    # Tronquée juste après le dernier item complet → on ferme le tableau.
+    buf = '{"items": [{"r": "antec", "v": "a", "p": "a"}, '
+    data = ee._repair_truncated_json(buf)
+    assert data is not None and data["items"] == [{"r": "antec", "v": "a", "p": "a"}]
+
+
+def test_repair_truncated_json_mid_string():
+    # Tronquée au milieu d'une chaîne de valeur (nombre impair de guillemets)
+    # → on ferme guillemets + structures ; l'item sans "p" sera rejeté ensuite
+    # par le validateur (passage vide).
+    buf = '{"items": [{"r": "patho", "v": "douleur thoracique'
+    data = ee._repair_truncated_json(buf)
+    assert data is not None and len(data["items"]) == 1
+
+
+def test_repair_truncated_json_irreparable():
+    # Rien de récupérable → None (le segment bascule sur les règles).
+    assert ee._repair_truncated_json("") is None
+    assert ee._repair_truncated_json("du texte libre sans JSON") is None
+
+
 def test_run_with_timeout_times_out():
     import time
 

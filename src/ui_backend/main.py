@@ -280,6 +280,16 @@ def process(document_id: str, body: ProcessIn, sess: dict = Depends(current_sess
         meta = next(d for d in store.list_documents() if d["id"] == document_id)
     except (KeyError, StopIteration):
         raise HTTPException(404, "Document inconnu") from None
+    # Garde-fou anti double-traitement : deux jobs simultanés sur le même
+    # document se disputent le modèle (les logs ont montré deux traitements
+    # concurrents sur le même fichier 48,9 Mo → 1h30 de génération gâchée).
+    for jb in _jobs.values():
+        if jb.get("document_id") == document_id and jb.get("status") == "processing":
+            raise HTTPException(
+                409,
+                f"Un traitement est déjà en cours pour ce document ({jb['job_id']}) — "
+                "attendez sa fin avant de relancer.",
+            )
     if body.engine not in ENGINES:
         # Moteur indisponible sur ce poste (ex. « unlimited » sans NVIDIA) → 400
         raise HTTPException(
