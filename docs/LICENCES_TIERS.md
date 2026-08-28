@@ -18,12 +18,30 @@
 
 ## 1. Modèles d'IA (le point sensible de l'annexe 1)
 
-Le prototype embarque **trois moteurs d'extraction** hiérarchisés : règles →
-**DrBERT** (NER médical léger) → **LLM local** (machines puissantes). Chaque
-moteur est traçable (XAI, champ `moteur_nlp`) et le moteur règles (notre code)
-reste le **repli automatique** — aucune régression si un modèle est absent.
+Le prototype embarque **trois moteurs d'extraction** : **DrBERT-CASM2**
+(encodeur NER, **moteur par défaut**, décision de l'étape 0 — banc
+`tools/eval_drbert.py`) → moteur de **règles** (repli automatique, notre
+code) → **LLM local** (optionnel, machines puissantes). Chaque moteur est
+traçable (XAI, champ `moteur_nlp`) et le moteur règles reste le **repli
+automatique** — aucune régression si un modèle est absent.
 
-### 1.1 DrBERT-MedicalNER-FR — NER médical français
+### 1.1 DrBERT-CASM2 — encodeur d'extraction PAR DÉFAUT
+
+| Composant | Licence | Source vérifiée |
+|---|---|---|
+| Checkpoint `medkit/DrBERT-CASM2` | **MIT** | fiche Hugging Face [`medkit/DrBERT-CASM2`](https://huggingface.co/medkit/DrBERT-CASM2) |
+| Base `Dr-BERT/DrBERT-7GB` | **Apache-2.0** | fiche Hugging Face [`Dr-BERT/DrBERT-7GB`](https://huggingface.co/Dr-BERT/DrBERT-7GB) |
+
+- Licence **MIT** (permissive : usage commercial, modification, distribution,
+  attribution) — la plus simple possible pour un point sensible.
+- Modèle **vendorisé à la fabrication** de l'installeur
+  (`packaging/fetch_models.py`, ≈ 440 Mo), lu **strictement en local** à
+  l'exécution (`VSM_DRBERT_PATH`) : aucun réseau au cabinet (art. 9).
+- Extraction par **étiquetage de tokens** (pas de génération) : les valeurs
+  sont des extraits exacts du texte source — l'anti-hallucination est
+  structurelle, pas contractuelle.
+
+### 1.2 DrBERT-MedicalNER-FR — NER médical français (complément du moteur de règles)
 
 | Composant | Licence | Source vérifiée |
 |---|---|---|
@@ -74,7 +92,7 @@ de référence DrBERT (Labrak et al., « DrBERT: A Robust Pre-trained Model in
 French for Biomedical and Clinical domains », ACL'23), qui accompagne la
 documentation et le dossier.
 
-### 1.2 LLM local (Qwen 2.5)
+### 1.3 LLM local (Qwen 2.5)
 
 | Modèle | Licence | Source |
 |---|---|---|
@@ -85,7 +103,7 @@ documentation et le dossier.
 - Licence **Apache-2.0** (permissive, aucune contrainte de droits de tiers).
   Voir `docs/ADR/0009-llm-par-defaut-universel.md`.
 
-### 1.3 OCR « Unlimited » (baidu, optionnel — GPU NVIDIA)
+### 1.4 OCR « Unlimited » (baidu, optionnel — GPU NVIDIA)
 
 | Composant | Licence |
 |---|---|
@@ -169,6 +187,7 @@ Organisateurs.
 | Donnée | Licence / statut |
 |---|---|
 | Dataset de démonstration `data/synthetic/` | **100 % fictif** (identités générées, seed 42) — aucune donnée patient réelle |
+| Dataset d'entraînement `medkit/DrBERT-CASM2` (CASM2) | **MIT** — cas cliniques français pseudonymisés ; utilisé uniquement en amont, pas distribué |
 | Dataset d'entraînement DrBERT `MedicalNER_Fr` | **CC-BY-4.0** (attribution respectée) — utilisé uniquement en amont, pas distribué |
 
 ---
@@ -177,16 +196,17 @@ Organisateurs.
 
 | Article Annexe 1 | Analyse | Verdict |
 |---|---|---|
-| **Art. 1** — licence non exclusive, gratuite, mondiale sur le prototype (application, modèles d'IA, scripts, docs) | L'application, les scripts et la documentation sont notre œuvre → concédés librement. Les **modèles tiers** (DrBERT, Qwen) sont fournis **sous leur licence amont** (usage commercial permis pour DrBERT ; Apache-2.0 pour Qwen), **non** re-licenciés comme notre œuvre. | ✅ Compatible (formulation : fourni sous licence amont) |
-| **Art. 2** — intégration des briques au projet opérationnel | Couvert par l'usage **commercial** permis (§2 du `LICENSE` DrBERT) et Apache-2.0 (Qwen). Le disclaimer médical vaut note de responsabilité, pas interdiction. | ✅ |
+| **Art. 1** — licence non exclusive, gratuite, mondiale sur le prototype (application, modèles d'IA, scripts, docs) | L'application, les scripts et la documentation sont notre œuvre → concédés librement. Les **modèles tiers** (DrBERT-CASM2 **MIT**, DrBERT-MedicalNER usage commercial permis, Qwen **Apache-2.0**) sont fournis **sous leur licence amont**, **non** re-licenciés comme notre œuvre. | ✅ Compatible (formulation : fourni sous licence amont) |
+| **Art. 2** — intégration des briques au projet opérationnel | Couvert par le **MIT** (DrBERT-CASM2), l'usage **commercial** permis (§2 du `LICENSE` DrBERT-MedicalNER) et **Apache-2.0** (Qwen). Le disclaimer médical vaut note de responsabilité, pas interdiction. | ✅ |
 | **Art. 4** — « ne contrefait aucun droit de tiers » | Les modèles sont utilisés **sous licences valides** → pas une contrefaçon. Condition respectée (attribution, usages permis, gestion du disclaimer). | ✅ |
 | **Art. 4** — RGPD / données anonymisées uniquement | Indépendant de la licence ; satisfait (art. 9 du règlement : uniquement les documents anonymisés fournis, aucune réidentification). | ✅ |
 | **Art. 7** — RGPD / sécurité / performance | Aucun composant n'envoie de données hors machine (art. 9) ; licences documentées. | ✅ |
 
 ### Conditions vérifiées pour le jury
 
-1. **Attribution** : le checkpoint DrBERT, son auteur et l'article DrBERT sont
-   cités dans la documentation et le dossier (§1.1).
+1. **Attribution** : les checkpoints DrBERT (CASM2 et MedicalNER-FR), leurs
+   auteurs et l'article DrBERT sont cités dans la documentation et le dossier
+   (§1.1 et §1.2).
 2. **Disclaimer médical** : le VSM est un **brouillon à valider par un médecin**,
    pas un dispositif médical certifié — cohérent avec le §4 du `LICENSE` et
    l'avertissement affiché par l'application.

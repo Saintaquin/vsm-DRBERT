@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.anonymization.mapping_vault import MappingVault
+from src.extraction_nlp.entity_extractor import moteur_nlp_par_defaut
 from src.extraction_nlp.pipeline import run_pipeline as nlp_pipeline
 from src.ingestion_ocr.ocr_engines import ENGINES
 from src.ingestion_ocr.pipeline import run_pipeline as ocr_pipeline
@@ -87,10 +88,14 @@ class BootstrapIn(LoginIn):
 class ProcessIn(BaseModel):
     engine: str = Field(default="tesseract", pattern="^[a-z0-9_]+$")
     anonymize_mode: str = Field(default="pseudo", pattern="^(pseudo|strict)$")
-    # Moteur NLP : « llm » PAR DÉFAUT (toutes machines — modèle Qwen 2.5 3B
-    # universel, docs/ADR-0009) ; « rules » reste le repli automatique si le
-    # modèle est absent ou échoue. Strictement local (art. 9).
-    nlp_engine: str = Field(default="llm", pattern="^(rules|llm)$")
+    # Moteur NLP : « drbert » PAR DÉFAUT (encodeur DrBERT-CASM2 local —
+    # décision étape 0 : rapide, borné, sans invention, poste 4 cœurs/8 Go).
+    # Sélection par VSM_NLP_ENGINE (drbert | llm | regles) et par requête ;
+    # « llm » reste disponible sans être imposé, « rules » est le repli
+    # automatique (tracé dans provenance.nlp). Strictement local (art. 9).
+    nlp_engine: str = Field(
+        default=moteur_nlp_par_defaut(), pattern="^(drbert|llm|rules|regles)$"
+    )
 
 
 class ValidateIn(BaseModel):
@@ -410,6 +415,8 @@ def _run_process_job(
 
         if use_llm:
             step("Phase LLM locale : correction OCR + extraction")
+        elif body.nlp_engine.strip().lower() == "drbert":
+            step("Extraction NLP (DrBERT — encodeur local)")
         else:
             step("Extraction NLP (moteur de règles)")
         nlp_json = nlp_pipeline(

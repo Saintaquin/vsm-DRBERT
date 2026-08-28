@@ -1,14 +1,23 @@
 """Extraction d'entités médicales structurées depuis le texte OCR.
 
-Deux moteurs, sélectionnables :
+Trois moteurs, sélectionnables (VSM_NLP_ENGINE : drbert | llm | regles) :
 
-- ``rules`` (défaut, toujours disponible) : segmentation par rubriques
+- ``drbert`` (DÉFAUT — décision étape 0, banc d'essai tools/eval_drbert.py) :
+  ENCODEUR DrBERT-CASM2 local (medkit, licence MIT) — étiquette des tokens et
+  renvoie des offsets caractères : aucune hallucination possible, ancrage XAI
+  exact, plus de JSON à parser. Règles de contexte (rubriques.py) pour
+  affecter les 3 étiquettes CASM2 aux 7 rubriques du VSM. 100 % offline,
+  ~250 Mo de RAM en service, CPU seul.
+- ``rules`` (repli, toujours disponible) : segmentation par rubriques
   (ANTÉCÉDENTS, ALLERGIES, TRAITEMENTS…) + découpage en items + scoring.
-  100% offline, zéro modèle à télécharger — adapté au poste praticien.
 - ``llm`` (optionnel) : llama-cpp-python avec un modèle local quantizé
   (Llama 3.1 8B Instruct Q4_K_M, ~5 Go) en extraction JSON contrainte.
   Le modèle est téléchargé par l'admin au premier lancement et caché dans
   ~/.cache/vsm-ocr/ — jamais committé, jamais appelé en cloud.
+
+Le VALIDATEUR AVAL (valider_sortie) s'applique à la sortie des moteurs
+génératifs ET de l'encodeur : rejet du bruit résiduel, reclassement des cures
+courtes, dédoublonnage — quel que soit le moteur.
 
 Chaque entité porte : valeur, confiance, source (passage + offsets), moteur.
 """
@@ -16,6 +25,7 @@ Chaque entité porte : valeur, confiance, source (passage + offsets), moteur.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import asdict, dataclass
 
@@ -25,6 +35,34 @@ NLP_ENGINE_RULES = "rules-fr-v1"
 # Nom canonique du moteur LLM local (le modèle exact dépend du poste :
 # Qwen 2.5 3B par défaut — voir src/extraction_nlp/llm.py, ADR-0004).
 NLP_ENGINE_LLM = "llm-local-q4"
+# Moteur DrBERT-CASM2 (encodeur, décision étape 0) — distinct de l'ancien
+# « drbert-nlp-v1 » (DrBERT-MedicalNER-FR, mode complément, drbert.py) : la
+# provenance XAI doit distinguer les deux moteurs.
+NLP_ENGINE_DRBERT_CASM2 = "drbert-casm2-v1"
+
+
+def moteur_nlp_par_defaut() -> str:
+    """Moteur NLP par défaut de l'application : variable d'environnement
+    VSM_NLP_ENGINE (drbert | llm | regles), défaut « drbert » (étape 0).
+
+    Valeur invalide → « drbert », avec un avertissement (jamais de plantage
+    au démarrage pour une variable mal renseignée).
+    """
+    brut = os.environ.get("VSM_NLP_ENGINE", "drbert").strip().lower()
+    if brut in ("drbert", "llm"):
+        return brut
+    if brut in ("regles", "rules"):
+        return "rules"
+    _log.warning("VSM_NLP_ENGINE=%r invalide — moteur « drbert » retenu", brut)
+    return "drbert"
+
+
+def _normaliser_moteur(engine: str) -> str:
+    """« regles »/« rules »/« llm »/« drbert » → clé canonique du dispatch."""
+    brut = (engine or "").strip().lower()
+    if brut in ("regles", "rules"):
+        return "rules"
+    return brut
 
 # Rubriques → en-têtes possibles dans les documents français
 SECTION_HEADERS = {
@@ -41,6 +79,13 @@ _HEADER_RX = re.compile(
     + "|".join(f"(?P<{k}>{v})" for k, v in SECTION_HEADERS.items())
     + r")\s*:?\s*",
     re.IGNORECASE | re.MULTILINE,
+)
+# En-tête de rubrique SEUL comme « valeur » (« ALLERGIES », « Traitement en
+# cours ») : l'encodeur DrBERT peut étiqueter le titre comme une entité — c'est
+# du bruit sans contenu clinique, rejeté quelle que soit la rubrique visée.
+_RX_ENTETE_SEULE = re.compile(
+    r"^(?:" + "|".join(SECTION_HEADERS.values()) + r")\s*:?$",
+    re.IGNORECASE,
 )
 
 _NEG_ALLERGY = re.compile(
@@ -711,7 +756,21 @@ def valider_element(item: dict, texte_source: str, rubrique: str) -> dict | None
 
     Le rejet est la valeur par défaut : un élément douteux est supprimé plutôt
     que présenté à un médecin avec un score de confiance rassurant.
+
+    Les clés supplémentaires de ``item`` (offsets, score du modèle…) sont
+    PRÉSERVÉES dans l'élément validé : le moteur DrBERT s'en sert pour
+    l'ancrage XAI et la confiance réelle — le validateur est commun à tous
+    les moteurs, il ne doit ni perdre ni inventer d'information.
     """
+
+    def _garder(extra_reclasse: str | None = None) -> dict:
+        sortie = {k: v for k, v in item.items() if not k.startswith("_")}
+        sortie["valeur"] = valeur
+        sortie["passage"] = passage
+        if extra_reclasse:
+            sortie["_reclasser"] = extra_reclasse
+        return sortie
+
     valeur = (item.get("valeur") or "").strip()
     passage = (item.get("passage") or "").strip()
 
@@ -734,6 +793,10 @@ def valider_element(item: dict, texte_source: str, rubrique: str) -> dict | None
     bas = _normalise(valeur)
     if any(mot in bas for mot in _BLOCKLIST):
         return None
+    #    En-tête de rubrique seul (« ALLERGIES », « Antécédents : ») : le
+    #    modèle DrBERT peut l'étiqueter comme entité — bruit, rejeté.
+    if _RX_ENTETE_SEULE.match(valeur):
+        return None
 
     # 5. Fragments sans sens : trop peu de lettres, ou libellé vide.
     lettres = sum(c.isalpha() for c in valeur)
@@ -752,17 +815,13 @@ def valider_element(item: dict, texte_source: str, rubrique: str) -> dict | None
             return None
         if _RX_DUREE_COURTE.search(passage):
             # Cure courte : information vraie, rubrique fausse.
-            return {
-                "valeur": valeur,
-                "passage": passage,
-                "_reclasser": "points_vigilance",
-            }
+            return _garder("points_vigilance")
 
     # 7. Valeurs biologiques chiffrées : hors périmètre du VSM.
     if rubrique == "points_vigilance" and _RX_BIO.search(valeur):
         return None
 
-    return {"valeur": valeur, "passage": passage}
+    return _garder()
 
 
 def valider_sortie(brut: dict, texte_source: str) -> dict:
@@ -1141,6 +1200,135 @@ def _augment_with_drbert(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Moteur DrBERT-CASM2 (étapes 1 à 3) — moteur PAR DÉFAUT (décision étape 0).
+#
+# L'encodeur ÉTIQUETTE des tokens : les « valeur » sont des extraits EXACTS du
+# texte source (offsets absolus), la confiance est le score softmax RÉEL du
+# modèle (plus de badge vert à 80 % sur une donnée fausse), et l'affectation
+# aux 7 rubriques est faite par les règles de contexte de rubriques.py — elles
+# s'appliquent à des entités déjà reconnues, jamais à du texte brut.
+#
+# Le VALIDATEUR AVAL (valider_sortie) reste branché sur cette sortie, comme
+# sur celle du LLM : rejet du bruit résiduel (en-têtes, pseudonymes,
+# fragments), reclassement des cures courtes, dédoublonnage.
+# ---------------------------------------------------------------------------
+
+
+def _drbert_vers_entities(text: str) -> list[ExtractedEntity]:
+    """Chaîne DrBERT complète : extraction → rubriques → VALIDATEUR → entités.
+
+    « valeur » et « passage » sont le MÊME extrait exact du texte source :
+    découpe aux offsets, jamais de recopie, jamais d'appariement flou
+    (l'ancrage XAI est structurel). Lève DrBERTIndisponible si le modèle
+    est absent ou illisible — c'est l'appelant qui décide du repli.
+    """
+    from .drbert_extractor import extraire_entites
+    from .rubriques import affecter_rubriques
+
+    entites = extraire_entites(text)
+    brut: dict[str, list[dict]] = {}
+    for ent, section in affecter_rubriques(entites, text):
+        brut.setdefault(section, []).append(
+            {
+                "valeur": ent.texte,
+                "passage": ent.texte,
+                "offset_debut": ent.debut,
+                "offset_fin": ent.fin,
+                "score": ent.score,
+            }
+        )
+    valide = valider_sortie(brut, text)
+    sortie: list[ExtractedEntity] = []
+    for section, items in valide.items():
+        for it in items:
+            sortie.append(
+                ExtractedEntity(
+                    valeur=it["valeur"],
+                    section=section,
+                    confiance=round(float(it.get("score", 0.0)), 3),
+                    passage=it["passage"],
+                    offset_debut=int(it.get("offset_debut", 0)),
+                    offset_fin=int(it.get("offset_fin", 0)),
+                    moteur_nlp=NLP_ENGINE_DRBERT_CASM2,
+                    correction_ocr=False,  # la valeur EST le texte source
+                    origine="drbert",
+                )
+            )
+    return sortie
+
+
+def extract_entities_drbert(
+    texte: str, document_id: str = "", page: int | None = None
+) -> dict[str, list[dict]]:
+    """Extraction DrBERT-CASM2 → les 7 rubriques du VSM, champs tracés.
+
+    Même structure que le contrat aval : chaque élément porte
+    ``{valeur, confiance, source: {document_id, page?, passage, offset_debut,
+    offset_fin}, moteur_nlp, correction_ocr, origine}``. La confiance vient du
+    score softmax du modèle ; le passage est extrait PAR DÉCOUPE AUX OFFSETS.
+    Le validateur aval est appliqué (rejet du bruit résiduel quel que soit le
+    moteur). Lève DrBERTIndisponible si le modèle est absent.
+    """
+    entites = _drbert_vers_entities(texte)
+    sections: dict[str, list[dict]] = {s: [] for s in _VSM_SECTIONS}
+    for ent in entites:
+        champ = ent.to_champ()
+        champ["source"]["document_id"] = document_id
+        if page is not None:
+            champ["source"]["page"] = page
+        sections[ent.section].append(champ)
+    return sections
+
+
+def _drbert_avec_repli(
+    text: str, report: dict
+) -> tuple[list[ExtractedEntity], dict]:
+    """Phase DrBERT avec repli tracé — jamais de plantage du traitement.
+
+    - modèle absent/illisible → règles, statut « modele_absent » ;
+    - erreur d'inférence → règles, statut « repli_regles » ;
+    - sortie DrBERT vide → complément par les règles (tracé), comme la phase
+      LLM le fait sur « Sortie LLM vide » ;
+    - sinon → entités DrBERT validées, statut « drbert ».
+    """
+    import time
+
+    from .drbert_extractor import DrBERTIndisponible, nom_moteur
+
+    def _regles() -> list[ExtractedEntity]:
+        return _augment_with_drbert(
+            extract_entities_free_text_fallback(text, extract_entities_rules(text)),
+            text,
+        )
+
+    t0 = time.perf_counter()
+    try:
+        entites = _drbert_vers_entities(text)
+    except DrBERTIndisponible as exc:
+        _log.info("DrBERT indisponible — moteur de règles : %s", exc)
+        report["statut"] = "modele_absent"
+        report["raison"] = str(exc)
+        return _regles(), report
+    except Exception as exc:  # noqa: BLE001 — repli tracé dans le rapport
+        _log.warning("Extraction DrBERT échouée — repli règles : %s", exc)
+        report["statut"] = "repli_regles"
+        report["raison"] = f"Extraction DrBERT échouée ({exc})"
+        return _regles(), report
+    report["duree_extraction_sec"] = round(time.perf_counter() - t0, 3)
+    report["modele"] = nom_moteur()
+    if entites:
+        report["moteur"] = NLP_ENGINE_DRBERT_CASM2
+        report["statut"] = "drbert"
+        return entites, report
+    # Zéro entité : réponse valide d'un encodeur sur un document sans contenu
+    # clinique exploitable — on complète par les règles, tracé dans le rapport.
+    _log.info("DrBERT n'a produit aucune entité — complément par les règles")
+    report["statut"] = "repli_regles"
+    report["raison"] = "Sortie DrBERT vide — complément par les règles"
+    return _regles(), report
+
+
 def _hard_split(text: str, max_chars: int) -> list[str]:
     """Découpe un paragraphe trop long en segments ≤ max_chars (sans couper un
     mot)."""
@@ -1240,13 +1428,20 @@ def extract_entities_with_report(
 ) -> tuple[list[ExtractedEntity], dict]:
     """Extraction + RAPPORT du moteur réellement utilisé.
 
-    Pour ``engine="llm"``, la phase LLM locale est OBLIGATOIRE dès que le
-    modèle est présent : extraction structurée sur le texte BRUT (ancrage XAI
-    préservé), correction lexicale déterministe des « valeur » en aval. Le
-    texte est découpé en SEGMENTS bornés (grands documents) ; chaque segment
-    est traité indépendamment, avec REPLI PAR SEGMENT (jamais global) sur les
-    règles en cas d'échec. ``progress(done, total)`` (optionnel) est appelé
-    entre les segments pour l'affichage.
+    Moteurs (alias « regles » accepté) :
+    - ``drbert`` : ENCODEUR DrBERT-CASM2 (moteur par défaut de l'application,
+      VSM_NLP_ENGINE) — entités par offsets + règles de contexte de rubriques,
+      validateur aval, repli règles tracé si modèle absent ou sortie vide.
+    - ``llm`` : phase LLM locale OBLIGATOIRE dès que le modèle est présent :
+      extraction structurée sur le texte BRUT (ancrage XAI préservé),
+      correction lexicale déterministe des « valeur » en aval. Le texte est
+      découpé en SEGMENTS bornés (grands documents) ; chaque segment est
+      traité indépendamment, avec REPLI PAR SEGMENT (jamais global) sur les
+      règles en cas d'échec.
+    - ``rules`` : moteur de règles (toujours disponible).
+
+    ``progress(done, total)`` (optionnel) est appelé entre les segments LLM
+    pour l'affichage.
 
     Rapport : {"moteur", "statut", "raison", "nb_corrections_ocr",
     "duree_extraction_sec", "modele", "nb_chunks"}."""
@@ -1266,6 +1461,9 @@ def extract_entities_with_report(
             text,
         )
 
+    engine = _normaliser_moteur(engine)
+    if engine == "drbert":
+        return _drbert_avec_repli(text, report)
     if engine != "llm":
         return _regles(), report
 
