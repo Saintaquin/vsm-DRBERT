@@ -142,6 +142,7 @@ def current_session(
 # ----------------------------------------------------------------- auth
 @app.get("/health")
 def health():
+    from src.extraction_nlp.drbert_extractor import dossier_modele, modele_disponible
     from src.extraction_nlp.llm import (
         llm_attemptable,
         llm_ram_warning,
@@ -154,12 +155,14 @@ def health():
         # Moteurs OCR réellement disponibles sur ce poste — « unlimited »
         # n'apparaît QUE si une carte NVIDIA est détectée (docs/ADR/0005).
         "available_engines": sorted(ENGINES),
-        # LLM : « available » dès que le modèle est présent ET que
-        # llama-cpp-python est importable (il est TENTÉ sur toutes les
-        # machines — exigence). llm_reason = avertissement non bloquant
-        # (RAM juste) ou raison de l'indisponibilité (modèle absent,
-        # bibliothèque manquante) ; repli règles en cas de timeout
-        # (jamais « infini »). ADR-0009.
+        # DrBERT (moteur NLP PAR DÉFAUT, encodeur local — décision étape 0) :
+        # présent dans models/drbert/ ou VSM_DRBERT_PATH. Absent → repli
+        # règles TRACÉ (provenance.nlp), jamais de plantage.
+        "drbert_available": modele_disponible(),
+        "drbert_path": str(dossier_modele()),
+        # LLM génératif : OPTIONNEL désormais (plus dans le flux par défaut) —
+        # « available » si le GGUF est présent ET llama-cpp-python importable
+        # (repli règles sinon). llm_reason = RAM juste ou indisponibilité.
         "llm_available": llm_attemptable(),
         "llm_reason": llm_ram_warning() or llm_unavailability_reason(),
     }
@@ -403,9 +406,10 @@ def _run_process_job(
                 document_id, mapping
             )
 
-        # Phase LLM locale par document (exigence) : correction OCR + extraction
-        # structurée, découpées en segments pour les gros documents. Le repli
-        # règles éventuel est tracé dans provenance.nlp et rapporté au médecin.
+        # Phase NLP locale par document : ENCODEUR DrBERT-CASM2 par défaut
+        # (décision étape 0 — étiquetage par offsets, pas de génération) ;
+        # « llm » reste disponible sur demande explicite. Le repli règles
+        # éventuel est tracé dans provenance.nlp et rapporté au médecin.
         from src.extraction_nlp.llm import llm_attemptable
 
         use_llm = body.nlp_engine == "llm" and llm_attemptable()

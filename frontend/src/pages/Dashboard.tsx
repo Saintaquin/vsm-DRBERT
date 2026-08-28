@@ -15,24 +15,23 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [lastReport, setLastReport] = useState<ProcessResult | null>(null);
   const [anonymizeMode, setAnonymizeMode] = useState<"pseudo" | "strict">("pseudo");
-  // LLM local PAR DÉFAUT (toutes machines) ; les règles servent de repli
-  // automatique côté backend si le modèle est absent (docs/ADR-0009).
-  const nlpEngine = "llm" as const;
-  const [llmAvailable, setLlmAvailable] = useState<boolean>(true);
-  const [llmReason, setLlmReason] = useState<string>("");
+  // Moteur NLP : ENCODEUR DrBERT-CASM2 local (décision étape 0 — la phase
+  // LLM générative n'est plus dans le flux par défaut ; code conservé côté
+  // backend, activable via nlp_engine="llm" à la demande).
+  const nlpEngine = "drbert" as const;
   const [maxUploadMb, setMaxUploadMb] = useState<number>(50);
+  const [drbertMissing, setDrbertMissing] = useState(false);
   const [ocrEngine, setOcrEngine] = useState<string>("tesseract");
   const [availableEngines, setAvailableEngines] = useState<string[]>(["tesseract"]);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Configuration publiée par le backend : limite d'upload, moteurs OCR
-  // (« unlimited » n'apparaît que sur poste NVIDIA) et faisabilité du LLM.
+  // Configuration publiée par le backend : limite d'upload et moteurs OCR
+  // (« unlimited » n'apparaît que sur poste NVIDIA).
   useEffect(() => {
     api.health()
       .then((h) => {
         if (typeof h.max_upload_mb === "number") setMaxUploadMb(h.max_upload_mb);
-        if (typeof h.llm_available === "boolean") setLlmAvailable(h.llm_available);
-        if (typeof h.llm_reason === "string") setLlmReason(h.llm_reason);
+        if (h.drbert_available === false) setDrbertMissing(true);
         if (Array.isArray(h.available_engines) && h.available_engines.length) {
           setAvailableEngines(h.available_engines);
           setOcrEngine(h.available_engines.includes("tesseract") ? "tesseract" : h.available_engines[0]);
@@ -117,14 +116,13 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
               </label>
             ))}
           </fieldset>
-          {!llmAvailable ? (
+          {drbertMissing && (
             <Alerte kind="info">
-              ⚠ LLM local indisponible — {llmReason ||
-              "l'extraction utilise le moteur de règles en repli. Pour activer le LLM (Qwen 2.5 3B, ~2 Go) : python -m src.extraction_nlp.llm"}
+              ⚠ Modèle DrBERT-CASM2 absent — l'extraction utilisera le moteur
+              de règles en repli (tracé dans le VSM). Vérifiez l'installation
+              ou VSM_DRBERT_PATH.
             </Alerte>
-          ) : llmReason ? (
-            <Alerte kind="info">ℹ LLM en cours d'utilisation — {llmReason}</Alerte>
-          ) : null}
+          )}
           <fieldset className="flex flex-wrap items-center gap-4">
             <legend className="sr-only">Moteur OCR</legend>
             <span className="text-sm font-medium text-encre">OCR :</span>
@@ -153,11 +151,15 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
               {lastReport.pii_detected_count} PII détectée(s) et masquée(s).{" "}
               {lastReport.nlp_report && (
                 <span>
-                  {lastReport.nlp_report.statut.startsWith("llm")
-                    ? `· LLM local : ${lastReport.nlp_report.nb_corrections_ocr ?? 0} valeur(s) corrigée(s)`
-                    : `· ⚠ ${lastReport.nlp_report.statut === "modele_absent"
-                        ? "LLM local absent — règles"
-                        : `repli règles (${lastReport.nlp_report.raison ?? lastReport.nlp_report.statut})`}`}{" "}
+                  {lastReport.nlp_report.statut === "drbert"
+                    ? `· DrBERT (encodeur local)${lastReport.nlp_report.duree_extraction_sec != null
+                        ? ` — extraction ${lastReport.nlp_report.duree_extraction_sec.toFixed(1)} s`
+                        : ""}`
+                    : lastReport.nlp_report.statut.startsWith("llm")
+                      ? `· LLM local : ${lastReport.nlp_report.nb_corrections_ocr ?? 0} valeur(s) corrigée(s)`
+                      : `· ⚠ ${lastReport.nlp_report.statut === "modele_absent"
+                          ? "modèle DrBERT absent — moteur de règles"
+                          : `repli règles (${lastReport.nlp_report.raison ?? lastReport.nlp_report.statut})`}`}{" "}
                 </span>
               )}
               <button className="font-semibold underline underline-offset-2"

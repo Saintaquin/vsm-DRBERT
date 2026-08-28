@@ -281,7 +281,8 @@ def test_health_exposes_upload_limit(client):
 
 def test_process_invalid_nlp_engine_rejected(client):
     _login(client)
-    # nlp_engine hors (rules|llm) → 422 (validation Pydantic) — pas de cloud.
+    # nlp_engine hors (drbert|llm|rules|regles) → 422 (validation Pydantic) —
+    # pas de cloud.
     r = client.post(
         "/documents/x/process",
         headers=_login(client),
@@ -335,9 +336,10 @@ def test_health_reports_llm_availability(client, monkeypatch):
     assert h["llm_reason"] == "RAM juste, lent"
 
 
-def test_process_default_nlp_engine_is_llm_with_fallback(client, tmp_path):
-    # Sans nlp_engine explicite, le POST /process utilise « llm » par défaut ;
-    # sans modèle téléchargé, le repli règles produit quand même le VSM.
+def test_process_default_nlp_engine_is_drbert_with_fallback(client, tmp_path):
+    # Sans nlp_engine explicite, le POST /process utilise « drbert » par
+    # défaut (VSM_NLP_ENGINE) ; le conftest force un modèle ABSENT : le repli
+    # règles produit quand même le VSM, et le rapport trace « modele_absent ».
     headers = _login(client)
     synth = (
         Path(__file__).resolve().parents[2] / "data" / "synthetic" / "cas_001_clean.png"
@@ -373,6 +375,7 @@ def test_process_default_nlp_engine_is_llm_with_fallback(client, tmp_path):
     assert result["vsm_id"]
     vsm = client.get(f"/vsm/{result['vsm_id']}", headers=headers).json()
     assert vsm["provenance"]["moteur_nlp"] == "rules-fr-v1"  # repli automatique
+    assert result["nlp_report"]["statut"] == "modele_absent"  # repli TRACÉ
 
 
 def _seed_vsm(store, vsm_id, statut, codes, extra=None):

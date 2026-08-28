@@ -16,27 +16,29 @@
    (pseudonymisation par défaut) puis sélectionner le scan (PDF/PNG/JPG/TIFF,
    50 Mo max).
 2. Le traitement est automatique (indicateur de progression) : OCR, masquage
-   des identités, **phase LLM locale** (correction des erreurs OCR puis
-   extraction structurée), génération du VSM.
-3. Le rapport indique le nombre de pages traitées, de PII masquées et le bilan
-   de la phase LLM (nombre de corrections OCR, ou repli règles avec la raison).
-   Le VSM créé apparaît avec le statut **« À valider »**.
+   des identités, **extraction DrBERT** (encodeur local : chaque valeur est
+   un extrait exact du document, jamais du texte inventé), génération du VSM.
+3. Le rapport indique le nombre de pages traitées, de PII masquées et le
+   bilan de l'extraction (moteur DrBERT et durée, ou repli règles avec la
+   raison — modèle absent, document sans contenu clinique). Le VSM créé
+   apparaît avec le statut **« À valider »**.
 4. Vous pouvez pré-corriger les champs évidents (fautes d'OCR) ; vous ne pouvez
    pas signer.
 
 ## Médecin — relire, corriger, signer
 
 1. Ouvrir le VSM depuis le tableau de bord (ou `Ctrl+K` pour le rechercher).
-   L'en-tête indique si la **phase LLM locale a été effectuée** (corrections
-   OCR, durées) ou, sinon, la raison du repli sur les règles.
+   L'en-tête indique le **moteur d'extraction réellement utilisé** (DrBERT,
+   ou le moteur de règles en repli avec la raison).
 2. Les champs sur **fond ambre « ⚠ À valider »** ont une confiance < 70 % :
    - cliquer **« Voir le passage source → »** affiche le texte d'origine surligné ;
-   - la mention « corrigé par le LLM » signale un champ dont l'orthographe a été
-     réparée par rapport au scan (accents, erreurs OCR) ;
+   - avec DrBERT, la confiance est le **score réel du modèle** sur le passage
+     (pas une estimation) et le passage est l'extrait exact du scan ;
    - corriger directement le champ, ou appuyer sur **↵** pour le confirmer tel quel.
    Chaque champ affiche aussi son code CIM-10/ATC normalisé et les moteurs utilisés.
-3. **« Relire par le LLM local »** relance la phase LLM (correction OCR +
-   extraction) uniquement sur les champs encore « À valider » ; relisez les
+3. **« Relire par le LLM local »** (optionnel — exige le GGUF Qwen téléchargé,
+   `python -m src.extraction_nlp.llm`) relance une passe de correction OCR +
+   extraction **uniquement sur les champs encore « À valider »** ; relisez les
    changements proposés, puis enregistrez — vous gardez la main.
 4. `Ctrl+↵` (ou « Enregistrer ») sauvegarde vos modifications.
 5. **« Signer et finaliser »** : le VSM est scellé (empreinte SHA-256), passe au
@@ -82,6 +84,6 @@
 | OCR vide ou illisible | Pack `fra` de Tesseract absent | `sudo apt install tesseract-ocr-fra` |
 | PDF refusé | Poppler absent | `sudo apt install poppler-utils` |
 | Session fermée seule | 15 min d'inactivité | Comportement normal (sécurité) — se reconnecter |
-| « ⚠ Phase LLM locale non effectuée » — modèle présent mais « llama-cpp-python » signalé | La bibliothèque d'inférence n'est pas installée (le GGUF seul ne suffit pas) | `python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu` (roue CPU précompilée ; PyPI n'héberge que le code source), puis relancer |
-| Phase LLM lente sur un vieux PC (repli règles « délai dépassé ») | Premier chargement du modèle (≈ 2 Go) dépassant le budget | Le modèle se charge une seule fois puis est préchargé au démarrage : relancer le traitement du document suivant ; ajuster `VSM_LLM_LOAD_TIMEOUT_SEC` si besoin |
-| Traitement long mais sans erreur (progression « segment X/Y ») | Grand document : le texte OCR est traité **segment par segment** par le LLM local (≈ 2-4 min/segment sur CPU lent, borné par `VSM_LLM_CHUNK_CHARS`) | Normal sur un PC lent : le traitement se termine, les segments trop lents basculent sur les règles sans erreur. Pour un document très volumineux, préférer le modèle ultra-léger : `python -m src.extraction_nlp.llm --model qwen2.5-1.5b` |
+| Bandeau « Modèle DrBERT-CASM2 absent — moteur de règles en repli » | Le dossier `models/drbert/` (ou `VSM_DRBERT_PATH`) est absent/incomplet | Réinstaller l'application (le modèle est vendorisé dans l'installeur) ou relancer `packaging/fetch_models.py` sur le poste de fabrication |
+| Extraction DrBERT lente au premier document | Premier chargement du modèle (~440 Mo) | Le modèle reste chargé : les documents suivants sont rapides (~2-10 s/page selon le PC) |
+| « Relire par le LLM local » en erreur | Le GGUF Qwen n'est pas installé (retiré du paquet par défaut) | Optionnel : `python -m src.extraction_nlp.llm`, puis `python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu` |

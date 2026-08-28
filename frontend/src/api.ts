@@ -40,10 +40,11 @@ export interface ChampTrace {
   origine?: "llm" | "regles" | "drbert" | string;
   code_normalise?: { systeme: string; code: string; libelle: string } | null;
 }
-/** Rapport de la phase NLP/LLM locale (XAI) — rempli par le backend. */
+/** Rapport de la phase NLP (XAI) — rempli par le backend : moteur réel
+ *  (DrBERT-CASM2 par défaut, règles en repli, LLM sur demande). */
 export interface NlpReport {
   moteur: string;
-  statut: "regles" | "modele_absent" | "repli_regles" | "llm_complet" | "llm_extraction_seule" | "llm_partiel" | string;
+  statut: "regles" | "drbert" | "modele_absent" | "repli_regles" | "llm_complet" | "llm_extraction_seule" | "llm_partiel" | string;
   raison?: string | null;
   phase_correction_ocr?: boolean;
   nb_corrections_ocr?: number;
@@ -89,6 +90,10 @@ export interface Health {
   status: string;
   max_upload_mb?: number;
   available_engines?: string[];
+  /** Encodeur DrBERT-CASM2 (moteur NLP par défaut) présent en local ? */
+  drbert_available?: boolean;
+  drbert_path?: string;
+  /** LLM génératif optionnel (n'est plus dans le flux par défaut). */
   llm_available?: boolean;
   llm_reason?: string;
 }
@@ -122,8 +127,10 @@ export const api = {
     return request<{ document_id: string; sha256: string }>("/documents/upload", { method: "POST", body: fd });
   },
   /** Lance le traitement en arrière-plan (réponse immédiate avec job_id).
-   *  Moteur NLP par défaut : « llm » (LLM local universel, repli règles auto). */
-  startProcess: (id: string, engine: string, anonymize_mode: string, nlp_engine = "llm") =>
+   *  Moteur NLP par défaut : « drbert » — encodeur DrBERT-CASM2 local
+   *  (décision étape 0 : rapide, borné, sans invention ; repli règles auto).
+   *  Le LLM génératif reste disponible via l'API (nlp_engine="llm"). */
+  startProcess: (id: string, engine: string, anonymize_mode: string, nlp_engine = "drbert") =>
     request<{ job_id: string; status: string }>(`/documents/${id}/process`, {
       method: "POST",
       body: JSON.stringify({ engine, anonymize_mode, nlp_engine }),

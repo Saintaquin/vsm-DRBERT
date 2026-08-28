@@ -18,24 +18,36 @@ const SECTION_ORDER: [string, string][] = [
 
 const isList = (v: unknown): v is ChampTrace[] => Array.isArray(v);
 
-/** Ligne d'information sur la phase NLP/LLM locale (XAI) : moteur réellement
- *  utilisé, corrections (lexicales), durée, raison du repli éventuel. */
+/** Ligne d'information sur la phase NLP (XAI) : moteur réellement utilisé
+ *  (DrBERT-CASM2 par défaut, règles en repli, LLM sur demande), corrections
+ *  (lexicales), durée, raison du repli éventuel. */
 function NlpInfo({ report }: { report?: NlpReport }) {
   if (!report) return null;
   const llm = report.statut.startsWith("llm");
+  const drbert = report.statut === "drbert";
   const partiel = report.statut === "llm_partiel";
   const detail = llm
     ? `LLM local${report.modele ? ` ${report.modele}` : ""} · ${report.nb_corrections_ocr ?? 0} valeur(s) corrigée(s)` +
       (report.duree_extraction_sec != null ? ` · extraction ${report.duree_extraction_sec.toFixed(0)} s` : "") +
       (report.nb_chunks && report.nb_chunks > 1 ? ` · ${report.nb_chunks} segments` : "") +
       (partiel && report.raison ? ` — ${report.raison}` : "")
-    : report.statut === "modele_absent"
-      ? "modèle LLM local non téléchargé — extraction par règles (python -m src.extraction_nlp.llm)"
-      : `repli moteur de règles${report.raison ? ` — ${report.raison}` : ""}`;
+    : drbert
+      ? `DrBERT-CASM2${report.modele ? ` (${report.modele})` : ""} — encodeur local` +
+        (report.duree_extraction_sec != null ? ` · extraction ${report.duree_extraction_sec.toFixed(0)} s` : "")
+      : report.statut === "modele_absent"
+        ? "modèle local absent — extraction par le moteur de règles"
+        : `repli moteur de règles${report.raison ? ` — ${report.raison}` : ""}`;
+  const ton = llm || drbert ? (partiel ? "text-ambre" : "text-mousse") : "text-ambre";
   return (
     <p className="text-xs text-sourdine">
-      <span className={llm ? (partiel ? "font-semibold text-ambre" : "font-semibold text-mousse") : "font-semibold text-ambre"}>
-        {partiel ? "◐ Phase LLM locale partielle" : llm ? "✓ Phase LLM locale effectuée" : "⚠ Phase LLM locale non effectuée"}
+      <span className={`font-semibold ${ton}`}>
+        {partiel
+          ? "◐ Phase LLM locale partielle"
+          : llm
+            ? "✓ Phase LLM locale effectuée"
+            : drbert
+              ? "✓ Extraction DrBERT effectuée"
+              : "◐ Moteur de règles (repli)"}
       </span>{" "}
       — {detail}
       {report.assist_llm && " · relecture assistée par le LLM"}

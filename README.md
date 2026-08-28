@@ -88,9 +88,10 @@ src/
 │                     optionnel), pseudonymisation réversible, coffre-fort chiffré, audit
 ├── ingestion_ocr/    preprocessing, moteurs OCR (Tesseract + adaptateurs DocTR/Paddle),
 │                     pipeline document→JSON, benchmark CER/WER, dataset synthétique
-├── extraction_nlp/   extraction par rubriques (moteur règles offline ; adaptateur LLM
-│                     local llama-cpp ; NER DrBERT-MedicalNER-FR léger CPU),
-│                     normalisation CIM-10/ATC (rapidfuzz)
+├── extraction_nlp/   extraction DrBERT-CASM2 (ENCODEUR local, moteur par
+│                     défaut), moteur règles (repli), LLM local llama-cpp
+│                     (optionnel), NER DrBERT-MedicalNER-FR (complément du
+│                     moteur règles), normalisation CIM-10/ATC (rapidfuzz)
 ├── vsm_generation/   assemblage VSM (ordre HAS, complétude, validation jsonschema),
 │                     rendu markdown / HTML / PDF
 ├── storage/          SQLite chiffré champ par champ (AES-256-GCM), clés de session
@@ -101,30 +102,40 @@ src-tauri/            wrapper desktop (bundles .msi / .AppImage / .deb)
 schema/vsm_schema.json  contrat d'interface entre les modules (v1.1.0)
 ```
 
-Le moteur NLP est **un LLM local par défaut sur toutes les machines**
-(**Qwen 2.5 3B, ~2 Go, Apache 2.0, CPU — machines ≥ 4 Go, sans GPU**) — 100 %
-offline (RGPD, art. 9) : modèle téléchargé une fois à l'installation, jamais
-pendant le traitement, inférence sur le texte pseudonymisé. Le moteur **règles
-reste le repli automatique** si le modèle est absent ou échoue (l'application
-fonctionne toujours).
+Le moteur NLP par défaut est l'**encodeur DrBERT-CASM2** (medkit, licence
+MIT — décision du banc d'essai `tools/eval_drbert.py`, étape 0) : il
+**étiquette** des tokens au lieu de générer du texte, donc **aucune
+hallucination possible** (toute valeur est un extrait exact du document, avec
+ses offsets — l'ancrage XAI est structurel), ~440 Mo, CPU seul, 100 % offline
+(RGPD, art. 9). Le modèle est vendorisé à la fabrication de l'installeur
+(`packaging/fetch_models.py`) et lu localement (`VSM_DRBERT_PATH`). Le moteur
+**règles reste le repli automatique** si le modèle est absent ou échoue
+(l'application fonctionne toujours, repli tracé dans `provenance.nlp`).
+
+```bash
+py -3.12 packaging/fetch_models.py             # fabrication : vendorise models/drbert/
+py -3.12 tools/e2e_drbert.py                   # test de bout en bout (vrai modèle)
+# VSM_NLP_ENGINE=drbert|llm|regles             # moteur par défaut (défaut : drbert)
+```
+
+### LLM local (optionnel)
+
+Le moteur LLM génératif (llama-cpp-python, Qwen 2.5) est **conservé mais
+optionnel** : il n'est plus dans le flux de traitement par défaut. Le bouton
+« Relire par le LLM local » du VSM l'utilise pour une seconde passe de
+correction OCR sur les champs « À valider » — s'il faut l'activer :
 
 ```bash
 pip install llama-cpp-python                  # moteur d'inférence
-python -m src.extraction_nlp.llm              # télécharge Qwen 2.5 3B (~2 Go) — DÉFAUT universel
-# --list : voir les options (qwen2.5-1.5b < 4 Go, qwen2.5-7b 9-14 Go, mistral-nemo-12b 16 Go…)
-# --model qwen2.5-1.5b                        # machines très légères (< 4 Go)
+python -m src.extraction_nlp.llm              # télécharge Qwen 2.5 3B (~2 Go)
+# --list : voir les options (qwen2.5-1.5b < 4 Go, qwen2.5-7b 9-14 Go…)
 ```
 
-Sans téléchargement, l'UI avertit et le moteur de règles prend le relais.
-Voir `docs/ADR/0009-llm-par-defaut-universel.md` et `docs/ADR/0004-llm-local-choix-modele.md`.
+### NER complémentaire — DrBERT-MedicalNER-FR (moteur règles)
 
-### NER médical français — DrBERT (léger, complémentaire)
-
-Un **NER médical français** (DrBERT-MedicalNER-FR, CamemBERT biomédical) est
-intégré et **complète automatiquement** l'extraction (règles **ou** LLM) avec
-les entités manquantes. Très léger (CPU ≤ 1 Go) → tourne même sur les postes
-4-8 Go sans GPU (réponse à « un moteur NLP sur toutes les machines »),
-spécialisé français médical.
+Un second NER médical français (DrBERT-MedicalNER-FR, CamemBERT biomédical)
+complète automatiquement l'extraction du **moteur de règles** avec les
+entités manquantes.
 
 ```bash
 py -3.12 -m pip install torch transformers\>=4.53,\<5   # environnement Python 3.12
@@ -142,7 +153,7 @@ python -m src.extraction_nlp.drbert                     # télécharge le modèl
 ## Tests, qualité, benchmark
 
 ```bash
-pytest tests/ -v                          # 120 tests (anonymisation, OCR, NLP, LLM, DrBERT, VSM, storage, API)
+pytest tests/ -v                          # 205 tests (anonymisation, OCR, NLP, DrBERT, LLM, VSM, storage, API)
 python -m src.ingestion_ocr.benchmark     # CER/WER → outputs/benchmark.csv + BENCHMARK_REPORT.md
 python -m examples.demo_nlp               # démo extraction NLP sur texte exemple
 ```
@@ -166,4 +177,5 @@ bloque les patterns de NIR hors dataset synthétique.
 
 La **conformité des licences tiers** (modèles d'IA, bibliothèques, binaires) est
 documentée dans [`docs/LICENCES_TIERS.md`](docs/LICENCES_TIERS.md) — compatible
-avec l'Annexe 1 (usage commercial permis pour DrBERT, Apache-2.0 pour les LLM).
+avec l'Annexe 1 (DrBERT-CASM2 MIT, usage commercial permis pour
+DrBERT-MedicalNER, Apache-2.0 pour les LLM).
