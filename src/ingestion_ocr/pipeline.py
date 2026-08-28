@@ -43,10 +43,14 @@ def _sha256_file(path: Path) -> str:
 _OCR_PDF_BATCH = int(os.environ.get("VSM_OCR_PDF_BATCH", "20"))
 
 
-def _load_pages(input_path: Path):
+def _load_pages(input_path: Path, max_pages: int | None = None):
     """Générateur (numéro de page réel, image). Pour les PDF : par LOTS de
     pages — la conversion complète d'un gros PDF en une fois provoque une
     saturation mémoire (résultat OCR vide). Pour une image : une seule page.
+
+    ``max_pages`` (optionnel) : borne le nombre de pages converties — les lots
+    sont ajustés pour ne jamais convertir plus que demandé (utile pour les
+    documents volumineux traités partiellement, ex. banc d'essai).
 
     Pas de dépendance pypdf : la fin du document est détectée quand un lot est
     vide (pdf2image retourne [] au-delà de la dernière page)."""
@@ -56,17 +60,20 @@ def _load_pages(input_path: Path):
 
         def _gen():
             start = 0
-            while True:
+            while max_pages is None or start < max_pages:
+                lot = _OCR_PDF_BATCH
+                if max_pages is not None:
+                    lot = min(_OCR_PDF_BATCH, max_pages - start)
                 pages = convert_from_path(
                     str(input_path),
                     dpi=200,
                     first_page=start + 1,
-                    last_page=start + _OCR_PDF_BATCH,
+                    last_page=start + lot,
                 )
                 if not pages:  # fin du document
                     break
                 yield from enumerate(pages, start=start + 1)
-                start += _OCR_PDF_BATCH
+                start += lot
 
         return _gen()
 
@@ -85,6 +92,7 @@ def run_pipeline(
     dossier_id: str | None = None,
     document_id: str | None = None,
     on_page=None,
+    max_pages: int | None = None,
 ) -> dict:
     """Exécute le pipeline complet sur un document.
 
@@ -97,6 +105,10 @@ def run_pipeline(
     ``on_page`` (optionnel) : callback appelé à chaque page lue (progression
     dans l'interface sur les gros PDF multi-pages).
 
+    ``max_pages`` (optionnel) : ne traiter que les N premières pages (None =
+    tout le document) — utilisé par les outils de développement (banc
+    d'essai) pour borner le temps OCR sur les documents volumineux.
+
     anonymize_mode : "off" (déconseillé), "pseudo" (réversible via coffre),
     "strict" (irréversible). Le mapping de pseudonymisation est retourné dans
     la clé privée "_pii_mapping" — à stocker UNIQUEMENT dans le MappingVault,
@@ -108,6 +120,8 @@ def run_pipeline(
         raise FileNotFoundError(input_path)
     if anonymize_mode not in ("off", "pseudo", "strict"):
         raise ValueError(f"anonymize_mode invalide : {anonymize_mode}")
+    if max_pages is not None and max_pages < 1:
+        raise ValueError(f"max_pages invalide : {max_pages}")
 
     document_id = document_id or f"doc_{uuid.uuid4().hex[:12]}"
     sha256 = _sha256_file(input_path)
@@ -118,7 +132,7 @@ def run_pipeline(
     raw_pages: list[str] = []
 
     try:
-        pages = _load_pages(input_path)
+        pages = _load_pages(input_path, max_pages=max_pages)
     except Exception as exc:  # document entier illisible (création du générateur)
         raise RuntimeError(f"Document illisible : {exc}") from exc
 
