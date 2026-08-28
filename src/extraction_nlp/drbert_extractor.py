@@ -264,6 +264,49 @@ def modele_disponible(dossier: Path | None = None) -> bool:
     return all((cible / f).is_file() for f in FICHIERS_MODELE)
 
 
+_DEPS: tuple[bool, str] | None = None
+
+
+def _dependances() -> tuple[bool, str]:
+    """torch + transformers importables DANS CET INTERPRÉTEUR ?
+
+    Résultat mis en cache : l'import de torch coûte plusieurs secondes
+    quand il réussit (et échoue instantanément quand il manque). C'est le
+    piège classique « python ≠ py -3.12 » sous Windows : le modèle est
+    présent, mais l'interpréteur de lancement n'a pas torch.
+    """
+    global _DEPS
+    if _DEPS is None:
+        try:
+            import torch  # noqa: F401
+            import transformers  # noqa: F401
+        except ImportError as exc:
+            raison = (
+                f"dépendance absente de CET interpréteur ({exc}) — "
+                "lancer avec py -3.12 -m src.ui_backend.main sous Windows"
+            )
+            _DEPS = (False, raison)
+        else:
+            _DEPS = (True, "")
+    return _DEPS
+
+
+def execution_possible(dossier: Path | None = None) -> tuple[bool, str]:
+    """DrBERT peut-il VRAIMENT tourner : fichiers du modèle ET dépendances ?
+
+    Retourne (ok, raison) — la raison est vide quand tout va bien. Contraire-
+    ment à ``modele_disponible`` (fichiers seuls), cette vérification reflète
+    ce que ``/health`` et la dérivation de moteur doivent annoncer AVANT un
+    traitement : un modèle présent dans un interpréteur sans torch ne tourne
+    jamais.
+    """
+    if not modele_disponible(dossier):
+        cible = dossier_modele() if dossier is None else dossier
+        raison = f"modèle absent de {cible} (VSM_DRBERT_PATH)"
+        return (False, raison)
+    return _dependances()
+
+
 # ---------------------------------------------------------------------------
 # Moteur (chargement paresseux, SINGLETON, strictement local)
 # ---------------------------------------------------------------------------

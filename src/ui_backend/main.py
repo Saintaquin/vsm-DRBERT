@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import sys
 import tempfile
 import threading
 import time
@@ -142,13 +143,17 @@ def current_session(
 # ----------------------------------------------------------------- auth
 @app.get("/health")
 def health():
-    from src.extraction_nlp.drbert_extractor import dossier_modele, modele_disponible
+    from src.extraction_nlp.drbert_extractor import (
+        dossier_modele,
+        execution_possible,
+    )
     from src.extraction_nlp.llm import (
         llm_attemptable,
         llm_ram_warning,
         llm_unavailability_reason,
     )
 
+    drbert_ok, drbert_raison = execution_possible()
     return {
         "status": "ok",
         "max_upload_mb": MAX_UPLOAD_MB,
@@ -156,10 +161,14 @@ def health():
         # n'apparaît QUE si une carte NVIDIA est détectée (docs/ADR/0005).
         "available_engines": sorted(ENGINES),
         # DrBERT (moteur NLP PAR DÉFAUT, encodeur local — décision étape 0) :
-        # présent dans models/drbert/ ou VSM_DRBERT_PATH. Absent → repli
-        # règles TRACÉ (provenance.nlp), jamais de plantage.
-        "drbert_available": modele_disponible(),
+        # RÉELLEMENT exécutable = fichiers du modèle + torch/transformers
+        # importables DANS CET INTERPRÉTEUR. Un modèle présent dans un
+        # interpréteur sans torch ne tourne jamais (« python » ≠ « py -3.12 »
+        # sous Windows) — la raison l'explique, l'UI l'affiche AVANT tout
+        # traitement. Absent → repli règles TRACÉ (provenance.nlp).
+        "drbert_available": drbert_ok,
         "drbert_path": str(dossier_modele()),
+        "drbert_reason": drbert_raison,
         # LLM génératif : OPTIONNEL désormais (plus dans le flux par défaut) —
         # « available » si le GGUF est présent ET llama-cpp-python importable
         # (repli règles sinon). llm_reason = RAM juste ou indisponibilité.
@@ -414,13 +423,15 @@ def _run_process_job(
         # le moteur de l'application — et NON vers les règles : l'encodeur
         # doit tourner quel que soit le bundle servi. Le repli règles
         # éventuel (modèle absent) reste tracé dans provenance.nlp.
-        from src.extraction_nlp.drbert_extractor import modele_disponible
+        from src.extraction_nlp.drbert_extractor import execution_possible
         from src.extraction_nlp.llm import llm_attemptable
 
         moteur = body.nlp_engine.strip().lower()
         if moteur in ("regles", "rules"):
             moteur = "rules"
-        if moteur == "llm" and not llm_attemptable() and modele_disponible():
+        # Ne dérive vers DrBERT que s'il peut VRAIMENT tourner (fichiers +
+        # torch) — sinon on laisse le pipeline tracer le repli règles.
+        if moteur == "llm" and not llm_attemptable() and execution_possible()[0]:
             _log.info("LLM demandé mais indisponible — extraction DrBERT utilisée")
             moteur = "drbert"
         use_llm = moteur == "llm" and llm_attemptable()
@@ -838,6 +849,26 @@ def main():
     # Journal applicatif structuré, local, sans PII (outputs/AUDIT_FASTAPI_LOGS.md)
     setup_logging(APP_DIR)
     _log.info("VSM-OCR démarré sur 127.0.0.1:8741 (100%% local)")
+
+    # DIAGNOSTIC AU DÉMARRAGE : si DrBERT (moteur par défaut) ne peut PAS
+    # tourner dans cet interpréteur, il faut le savoir MAINTENANT — pas après
+    # 3 minutes d'OCR au moment du repli règles. Cas typique sous Windows :
+    # « python » pointe vers un interpréteur sans torch (ex. 3.14) alors que
+    # l'environnement ML documenté est py -3.12. Le message donne
+    # l'interpréteur fautif ET la commande correcte.
+    if moteur_nlp_par_defaut() == "drbert":
+        from src.extraction_nlp.drbert_extractor import execution_possible
+
+        _ok, _raison = execution_possible()
+        if not _ok:
+            _log.warning(
+                "DrBERT INUTILISABLE : %s | interpréteur = %s (Python %s) | "
+                "Le moteur de règles sera utilisé en repli. Relancer avec : "
+                "py -3.12 -m src.ui_backend.main",
+                _raison,
+                sys.executable,
+                sys.version.split()[0],
+            )
 
     # Préchargement du modèle LLM local en arrière-plan : le premier document
     # ne paie pas le coût de chargement du GGUF (minutes sur PC lent).

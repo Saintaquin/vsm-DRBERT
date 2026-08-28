@@ -93,6 +93,7 @@ export interface Health {
   /** Encodeur DrBERT-CASM2 (moteur NLP par défaut) présent en local ? */
   drbert_available?: boolean;
   drbert_path?: string;
+  drbert_reason?: string;
   /** LLM génératif optionnel (n'est plus dans le flux par défaut). */
   llm_available?: boolean;
   llm_reason?: string;

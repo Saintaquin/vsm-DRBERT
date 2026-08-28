@@ -74,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     h = client.get("/health").json()
     _check(echecs, "DrBERT disponible", h.get("drbert_available") is True,
            str(h.get("drbert_path", "")))
+    _check(echecs, "raison DrBERT vide (torch importable, fichiers OK)",
+           h.get("drbert_reason", "") == "", str(h.get("drbert_reason", "")))
     _check(echecs, "LLM retiré (GGUF absent)", h.get("llm_available") is False,
            (h.get("llm_reason") or "")[:80])
 

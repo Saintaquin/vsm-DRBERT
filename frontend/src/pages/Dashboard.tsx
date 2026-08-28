@@ -21,9 +21,11 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
   const nlpEngine = "drbert" as const;
   const [maxUploadMb, setMaxUploadMb] = useState<number>(50);
   const [drbertMissing, setDrbertMissing] = useState(false);
+  const [drbertReason, setDrbertReason] = useState<string>("");
   const [ocrEngine, setOcrEngine] = useState<string>("tesseract");
   const [availableEngines, setAvailableEngines] = useState<string[]>(["tesseract"]);
   const fileRef = useRef<HTMLInputElement>(null);
+
 
   // Configuration publiée par le backend : limite d'upload et moteurs OCR
   // (« unlimited » n'apparaît que sur poste NVIDIA).
@@ -31,7 +33,12 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
     api.health()
       .then((h) => {
         if (typeof h.max_upload_mb === "number") setMaxUploadMb(h.max_upload_mb);
-        if (h.drbert_available === false) setDrbertMissing(true);
+        // Raison exacte fournie par le backend : modèle absent OU torch
+        // manquant dans l'interpréteur de lancement (python ≠ py -3.12).
+        if (h.drbert_available === false) {
+          setDrbertMissing(true);
+          setDrbertReason(h.drbert_reason ?? "");
+        }
         if (Array.isArray(h.available_engines) && h.available_engines.length) {
           setAvailableEngines(h.available_engines);
           setOcrEngine(h.available_engines.includes("tesseract") ? "tesseract" : h.available_engines[0]);
@@ -118,9 +125,9 @@ export function Dashboard({ onOpenVsm, onOpenDocument }: Props) {
           </fieldset>
           {drbertMissing && (
             <Alerte kind="info">
-              ⚠ Modèle DrBERT-CASM2 absent — l'extraction utilisera le moteur
-              de règles en repli (tracé dans le VSM). Vérifiez l'installation
-              ou VSM_DRBERT_PATH.
+              ⚠ DrBERT indisponible — l'extraction utilisera le moteur de
+              règles en repli (tracé dans le VSM).
+              {drbertReason ? ` Cause : ${drbertReason}.` : " Vérifiez l'installation ou VSM_DRBERT_PATH."}
             </Alerte>
           )}
           <fieldset className="flex flex-wrap items-center gap-4">

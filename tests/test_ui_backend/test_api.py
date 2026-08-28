@@ -403,7 +403,7 @@ def test_process_llm_indisponible_derive_vers_drbert(client, tmp_path, monkeypat
             )
         ]
 
-    monkeypatch.setattr(dtx, "modele_disponible", lambda dossier=None: True)
+    monkeypatch.setattr(dtx, "execution_possible", lambda dossier=None: (True, ""))
     monkeypatch.setattr(dtx, "_MOTEUR", types.SimpleNamespace(annoter=_annoter))
 
     headers = _login(client)
@@ -430,6 +430,16 @@ def test_process_llm_indisponible_derive_vers_drbert(client, tmp_path, monkeypat
     assert result["nlp_report"]["statut"] == "drbert"
     vsm = client.get(f"/vsm/{result['vsm_id']}", headers=headers).json()
     assert vsm["provenance"]["moteur_nlp"] == "drbert-casm2-v1"
+
+
+def test_health_drbert_reflete_executabilite(client):
+    # /health doit annoncer DrBERT INDISPONIBLE avec la RAISON — pas
+    # seulement vérifier les fichiers : un modèle présent dans un
+    # interpréteur sans torch (python ≠ py -3.12 sous Windows) ne tourne
+    # jamais. Sous conftest, VSM_DRBERT_PATH pointe vers un dossier vide.
+    h = client.get("/health").json()
+    assert h["drbert_available"] is False
+    assert "modèle absent" in h["drbert_reason"]
 
 
 def _seed_vsm(store, vsm_id, statut, codes, extra=None):

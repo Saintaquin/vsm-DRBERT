@@ -2,8 +2,12 @@
 
 ## Premiers pas (tous rôles)
 
-1. Lancer l'application (icône desktop VSM-OCR, ou `python -m src.ui_backend.main`
-   puis ouvrir http://127.0.0.1:8741).
+1. Lancer l'application (icône desktop VSM-OCR, ou `py -3.12 -m
+   src.ui_backend.main`), puis ouvrir http://127.0.0.1:8741. Sous Windows,
+   utiliser `py -3.12` et non `python` : l'interpréteur `python` par défaut
+   n'a généralement pas torch ; dans ce cas l'application le signale au
+   démarrage ET sur la page d'accueil (bannière DrBERT indisponible), et
+   l'extraction passe par le moteur de règles en repli.
 2. **Première utilisation** : « Créer le premier compte » — choisissez un mot de
    passe d'au moins 12 caractères. ⚠️ Ce mot de passe chiffre vos données : il
    est **impossible à récupérer** en cas d'oubli.
@@ -84,6 +88,6 @@
 | OCR vide ou illisible | Pack `fra` de Tesseract absent | `sudo apt install tesseract-ocr-fra` |
 | PDF refusé | Poppler absent | `sudo apt install poppler-utils` |
 | Session fermée seule | 15 min d'inactivité | Comportement normal (sécurité) — se reconnecter |
-| Bandeau « Modèle DrBERT-CASM2 absent — moteur de règles en repli » | Le dossier `models/drbert/` (ou `VSM_DRBERT_PATH`) est absent/incomplet | Réinstaller l'application (le modèle est vendorisé dans l'installeur) ou relancer `packaging/fetch_models.py` sur le poste de fabrication |
+| Bandeau « ⚠ DrBERT indisponible — … Cause : … » (page d'accueil) | Soit le dossier `models/drbert/` (ou `VSM_DRBERT_PATH`) est absent/incomplet, **soit l'application a été lancée avec un interpréteur sans torch** (ex. `python` au lieu de `py -3.12` sous Windows — la cause exacte est affichée dans le bandeau et au démarrage) | Relancer avec `py -3.12 -m src.ui_backend.main` ; si le modèle manque : réinstaller l'application (vendorisé dans l'installeur) ou relancer `packaging/fetch_models.py` sur le poste de fabrication |
 | Extraction DrBERT lente au premier document | Premier chargement du modèle (~440 Mo) | Le modèle reste chargé : les documents suivants sont rapides (~2-10 s/page selon le PC) |
 | « Relire par le LLM local » en erreur | Le GGUF Qwen n'est pas installé (retiré du paquet par défaut) | Optionnel : `python -m src.extraction_nlp.llm`, puis `python -m pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu` |

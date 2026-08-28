@@ -45,8 +45,11 @@ python -m src.ingestion_ocr.generate_dataset          # dataset de démonstratio
 # l'administrateur ; sans elle, les mappings PII↔token ne sont pas conservés) :
 export VSM_VAULT_PASSPHRASE="<phrase secrète longue gérée par votre DSI>"
 
-python -m src.ui_backend.main
+py -3.12 -m src.ui_backend.main
 # puis ouvrir http://127.0.0.1:8741 dans un navigateur
+# ⚠ Windows : lancer avec « py -3.12 », PAS « python » — l'interpréteur
+# « python » par défaut n'a pas torch : l'application vous avertirait au
+# démarrage (DrBERT INUTILISABLE — repli moteur de règles).
 ```
 
 À la première utilisation, cliquer « Première utilisation ? Créer le premier
