@@ -378,6 +378,60 @@ def test_process_default_nlp_engine_is_drbert_with_fallback(client, tmp_path):
     assert result["nlp_report"]["statut"] == "modele_absent"  # repli TRACÉ
 
 
+def test_process_llm_indisponible_derive_vers_drbert(client, tmp_path, monkeypatch):
+    # Frontend ANCIEN : il envoie nlp_engine="llm" alors que le GGUF a été
+    # retiré du paquet. Le backend doit dériver vers DrBERT (moteur de
+    # l'application) — PAS vers les règles. Moteur DrBERT FACTICE : aucun
+    # modèle réel n'est chargé (le conftest force VSM_DRBERT_PATH vide, on
+    # patche modele_disponible et le singleton).
+    import types
+
+    import src.extraction_nlp.drbert_extractor as dtx
+    from src.extraction_nlp.drbert_extractor import Entite
+
+    def _annoter(texte: str):
+        if "Hypertension" not in texte:
+            return []
+        debut = texte.index("Hypertension")
+        return [
+            Entite(
+                "problem",
+                "Hypertension arterielle",
+                debut,
+                debut + len("Hypertension arterielle"),
+                0.95,
+            )
+        ]
+
+    monkeypatch.setattr(dtx, "modele_disponible", lambda dossier=None: True)
+    monkeypatch.setattr(dtx, "_MOTEUR", types.SimpleNamespace(annoter=_annoter))
+
+    headers = _login(client)
+    synth = (
+        Path(__file__).resolve().parents[2] / "data" / "synthetic" / "cas_001_clean.png"
+    )
+    if not synth.exists():
+        pytest.skip("dataset non généré")
+    up = client.post(
+        "/documents/upload",
+        headers=headers,
+        files={"file": ("cas.png", synth.read_bytes(), "image/png")},
+    )
+    doc_id = up.json()["document_id"]
+    result = _process_and_wait(
+        client,
+        headers,
+        doc_id,
+        engine="tesseract",
+        anonymize_mode="pseudo",
+        nlp_engine="llm",  # demande d'un frontend périmé
+    )
+    assert result["nlp_report"]["moteur"] == "drbert-casm2-v1"
+    assert result["nlp_report"]["statut"] == "drbert"
+    vsm = client.get(f"/vsm/{result['vsm_id']}", headers=headers).json()
+    assert vsm["provenance"]["moteur_nlp"] == "drbert-casm2-v1"
+
+
 def _seed_vsm(store, vsm_id, statut, codes, extra=None):
     """Crée un VSM de test dans le store (sans OCR — rapide)."""
     sections = {}

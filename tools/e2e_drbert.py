@@ -14,7 +14,9 @@ Ce que le test vérifie (décisions des étapes 0 à 3) :
   ET dans la provenance du VSM ;
 - le VSM contient des entités dont le passage est l'EXTRAIT EXACT de la
   valeur (ancrage XAI structurel de l'encodeur) ;
-- sans champ nlp_engine, le moteur par défaut reste DrBERT (VSM_NLP_ENGINE).
+- sans champ nlp_engine, le moteur par défaut reste DrBERT (VSM_NLP_ENGINE) ;
+- un FRONTEND PÉRIMÉ qui demanderait « llm » (GGUF retiré) est dérivé vers
+  DrBERT par le backend — jamais vers les règles.
 
 Usage :
     py -3.12 tools/e2e_drbert.py                # cas_001_clean.png
@@ -172,6 +174,22 @@ def main(argv: list[str] | None = None) -> int:
     _check(echecs, "défaut = DrBERT (sans champ)",
            rep2.get("moteur") == "drbert-casm2-v1",
            f"{rep2.get('moteur')} / {rep2.get('statut')}")
+
+    # --- 7. Frontend PÉRIMÉ : nlp_engine="llm" (LLM retiré) ------------------
+    print("=== 7. Frontend périmé (nlp_engine=llm) → dérivation DrBERT ===")
+    up3 = client.post("/documents/upload", headers=headers,
+                      files={"file": (args.input.name, args.input.read_bytes(),
+                                      "application/octet-stream")})
+    doc_id = up3.json()["document_id"]
+    res3, etapes3, _ = _traiter(
+        {"engine": "tesseract", "anonymize_mode": "pseudo", "nlp_engine": "llm"}
+    )
+    rep3 = (res3 or {}).get("nlp_report", {})
+    _check(echecs, "llm demandé (indisponible) → DrBERT",
+           rep3.get("moteur") == "drbert-casm2-v1",
+           f"{rep3.get('moteur')} / {rep3.get('statut')}")
+    _check(echecs, "aucune étape « LLM » (cas périmé)",
+           not any("LLM" in e for e in etapes3))
 
     # --- Bilan -----------------------------------------------------------------
     print("=" * 60)

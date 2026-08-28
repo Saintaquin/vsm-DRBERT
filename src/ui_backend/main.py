@@ -406,25 +406,36 @@ def _run_process_job(
                 document_id, mapping
             )
 
-        # Phase NLP locale par document : ENCODEUR DrBERT-CASM2 par défaut
-        # (décision étape 0 — étiquetage par offsets, pas de génération) ;
-        # « llm » reste disponible sur demande explicite. Le repli règles
-        # éventuel est tracé dans provenance.nlp et rapporté au médecin.
+        # Phase NLP par document : ENCODEUR DrBERT-CASM2 par défaut (décision
+        # étape 0 — étiquetage par offsets, pas de génération) ; « llm » reste
+        # disponible sur demande explicite. RÈGLE DE DÉRIVATION : si le LLM
+        # est demandé mais indisponible (GGUF retiré du paquet, frontend
+        # ancien qui l'envoie encore en dur), la demande dérive vers DrBERT —
+        # le moteur de l'application — et NON vers les règles : l'encodeur
+        # doit tourner quel que soit le bundle servi. Le repli règles
+        # éventuel (modèle absent) reste tracé dans provenance.nlp.
+        from src.extraction_nlp.drbert_extractor import modele_disponible
         from src.extraction_nlp.llm import llm_attemptable
 
-        use_llm = body.nlp_engine == "llm" and llm_attemptable()
+        moteur = body.nlp_engine.strip().lower()
+        if moteur in ("regles", "rules"):
+            moteur = "rules"
+        if moteur == "llm" and not llm_attemptable() and modele_disponible():
+            _log.info("LLM demandé mais indisponible — extraction DrBERT utilisée")
+            moteur = "drbert"
+        use_llm = moteur == "llm" and llm_attemptable()
 
         def _prog(done: int, total: int) -> None:
             step(f"Phase LLM locale : segment {done}/{total}")
 
         if use_llm:
             step("Phase LLM locale : correction OCR + extraction")
-        elif body.nlp_engine.strip().lower() == "drbert":
+        elif moteur == "drbert":
             step("Extraction NLP (DrBERT — encodeur local)")
         else:
             step("Extraction NLP (moteur de règles)")
         nlp_json = nlp_pipeline(
-            ocr_json, nlp_engine=body.nlp_engine, progress=_prog if use_llm else None
+            ocr_json, nlp_engine=moteur, progress=_prog if use_llm else None
         )
         from src.vsm_generation.vsm_builder import build_vsm
 
@@ -447,7 +458,10 @@ def _run_process_job(
                 "document_id": document_id,
                 "vsm_id": vsm_id,
                 "engine": body.engine,
-                "nlp_engine": body.nlp_engine,
+                # Moteur EFFECTIVEMENT invoqué (après dérivation llm→drbert) ;
+                # le moteur réellement utilisé reste tracé par provenance.nlp.
+                "nlp_engine": moteur,
+                "nlp_engine_demande": body.nlp_engine,
                 "pii_count": ocr_json["pii_detected_count"],
             },
         )
@@ -465,15 +479,15 @@ def _run_process_job(
         job["status"] = "done"
         step("terminé")
         # Moteur NLP RÉELLEMENT utilisé (repli possible) + durée totale
-        moteur_effectif = vsm.get("provenance", {}).get("moteur_nlp", body.nlp_engine)
-        if moteur_effectif != body.nlp_engine:
+        moteur_effectif = vsm.get("provenance", {}).get("moteur_nlp", moteur)
+        if moteur_effectif != moteur:
             _log.info(
                 "document traité id=%s vsm=%s ocr=%s nlp=%s (repli sur %s) "
                 "pii=%d durée=%.1fs",
                 document_id,
                 vsm_id,
                 body.engine,
-                body.nlp_engine,
+                moteur,
                 moteur_effectif,
                 ocr_json["pii_detected_count"],
                 time.time() - job["created"],
@@ -484,7 +498,7 @@ def _run_process_job(
                 document_id,
                 vsm_id,
                 body.engine,
-                moteur_effectif,
+                moteur,
                 ocr_json["pii_detected_count"],
                 time.time() - job["created"],
             )
