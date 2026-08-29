@@ -3,11 +3,15 @@ schema/vsm_schema.json (sections remplies, champs vides si non trouvés)."""
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 
 from .entity_extractor import NLP_ENGINE_RULES, extract_entities_with_report
+from .filtres_vsm import normaliser
 from .normalizer import normalize_diagnosis, normalize_medication
+
+_log = logging.getLogger("vsm")
 
 SCHEMA_VERSION = "1.1.0"
 SECTIONS = (
@@ -89,9 +93,21 @@ def run_pipeline(
     confidence_threshold: float = 0.7,
     progress=None,
 ) -> dict:
+    from .filtres_vsm import (
+        carte_pages,
+        dedupliquer,
+        formes_en_tete_repetees,
+        page_de,
+    )
+
     text = ocr_json.get("text", "")
+    pages_ocr = ocr_json.get("pages") or []
+    # Carte des pages : nécessaire aux filtres par page (P6 en-tête de
+    # cabinet, page de chaque entité pour P2). Reconstruite par longueurs
+    # cumulées du join "\n\n" ; invalide → filtres désactivés (sûr).
+    carte = carte_pages(text, pages_ocr)
     entities, nlp_report = extract_entities_with_report(
-        text, engine=nlp_engine, progress=progress
+        text, engine=nlp_engine, progress=progress, pages=pages_ocr
     )
     # XAI : tracer le moteur RÉELLEMENT utilisé (repli « llm » → règles inclus)
     moteur_effectif = nlp_report["moteur"]
@@ -101,6 +117,10 @@ def run_pipeline(
         champ = ent.to_champ()
         champ["source"]["document_id"] = ocr_json.get("document_id", "")
         champ["moteur_ocr"] = ocr_json.get("ocr_engine", "")
+        if carte:
+            page = page_de(carte, int(champ["source"].get("offset_debut", 0)))
+            if page is not None:
+                champ["source"]["page"] = page
         if ent.section in _DIAG_SECTIONS:
             n = normalize_diagnosis(ent.valeur)
             if n["code_cim10"]:
@@ -121,6 +141,37 @@ def run_pipeline(
                 }
         champ["a_valider"] = champ["confiance"] < confidence_threshold
         sections[ent.section].append(champ)
+
+    # P6 — en-tête de cabinet : une forme qui apparaît à l'identique dans la
+    # zone d'en-tête de PLUS de 3 pages est du papier à lettres (« Maladies
+    # du Foie », l'adresse du cabinet…), pas un diagnostic. Un vrai
+    # diagnostic répété est dispersé dans le corps du texte.
+    if carte:
+        formes = [
+            c["valeur"] for items in sections.values() for c in items
+        ]
+        rejetees = formes_en_tete_repetees(formes, carte)
+        if rejetees:
+            supprimees = 0
+            for cle, items in sections.items():
+                sections[cle] = [
+                    c for c in items if normaliser(c["valeur"]) not in rejetees
+                ]
+                supprimees += len(items) - len(sections[cle])
+            _log.info(
+                "P6 en-tête répété : %d entrée(s) supprimée(s) (%s)",
+                supprimees,
+                ", ".join(sorted(rejetees))[:120],
+            )
+
+    # P2 — déduplication sémantique PAR RUBRIQUE (code normalisé → forme →
+    # similarité ≥ 88) : un dossier de 20 ans décrit la même pathologie à
+    # chaque compte rendu, avec les fautes d'OCR propres à chaque page. Le
+    # représentant est la forme la plus fréquente ; chaque entrée fusionnée
+    # porte ses occurrences et ses pages (« 15 mentions, pages 8 à 62 »).
+    for cle, items in sections.items():
+        if isinstance(items, list) and items:
+            sections[cle] = dedupliquer(items)
 
     result = {
         "schema_version": SCHEMA_VERSION,

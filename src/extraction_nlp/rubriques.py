@@ -22,12 +22,13 @@ mention d'allergie comme « problem » et les actes chirurgicaux comme
 |-------------|-------------------------------------------------|-----------------------|
 | treatment   | « allergi », « intoléran »                      | allergies             |
 | treatment   | « vaccin »                                      | vaccinations          |
+| treatment   | ACTE chirurgical (liste/suffixes, P3 — l'entité)| antecedents           |
 | treatment   | titre antécédents / « antécédent », « chirurgical », « opéré », « en 2003 » | antecedents |
 | treatment   | durée courte explicite (« cure de 7 jours »)    | points_vigilance      |
 | treatment   | sinon                                           | traitements_long_cours|
 | problem     | « allergi », « intoléran » (mention d'allergie) | allergies             |
 | problem     | titre antécédents / « antécédent », « chirurgical », « opéré », « en 2003 » | antecedents |
-| problem     | consommation, poids, activité physique          | facteurs_risque       |
+| problem     | LISTE FERMÉE d'expositions sur l'ENTITÉ (P5 : tabac, alcool, obésité, ménopause…) ou titre « Facteurs de risque » | facteurs_risque |
 | problem     | sinon                                           | pathologies_actives   |
 | test        | (toujours)                                      | points_vigilance      |
 
@@ -44,25 +45,14 @@ from __future__ import annotations
 import re
 
 from .drbert_extractor import Entite
+from .filtres_vsm import TITRES_RX, est_facteur_risque, est_un_acte
 
 # Fenêtre de contexte AVANT l'entité (caractères) — décision de l'étape 2.
 CONTEXTE_AVANT = 120
 
-# Titres de rubriques (même esprit que SECTION_HEADERS d'entity_extractor ;
-# maintenu séparé pour garder ce module sans dépendance circulaire).
-_TITRES_RX = re.compile(
-    r"^\s*("
-    r"(?P<antecedents>ANT[ÉE]C[ÉE]DENTS?|ATCD)"
-    r"|(?P<allergies>ALLERGIES?)"
-    r"|(?P<traitements_long_cours>TRAITEMENTS?(?:\s+(?:EN\s+COURS|LONG\s+COURS"
-    r"|DE\s+SORTIE|DE\s+FOND))?|ORDONNANCE)"
-    r"|(?P<vaccinations>VACCINATIONS?|VACCINS?)"
-    r"|(?P<pathologies_actives>PATHOLOGIES?\s+ACTIVES?|MOTIF|DIAGNOSTICS?)"
-    r"|(?P<facteurs_risque>FACTEURS?\s+DE\s+RISQUE)"
-    r"|(?P<points_vigilance>POINTS?\s+DE\s+VIGILANCE|PR[ÉE]CAUTIONS?)"
-    r")\s*:?",
-    re.IGNORECASE | re.MULTILINE,
-)
+# Titres de rubriques : maintenus dans filtres_vsm (la zone d'en-tête P6
+# s'y arrête aussi) — réimportés ici pour lisibilité.
+_TITRES_RX = TITRES_RX
 
 # Contextes (recherchés sans casse dans « 120 caractères avant + entité »).
 _RX_ALLERGIE = re.compile(r"allergi|intol[ée]ran", re.IGNORECASE)
@@ -79,22 +69,28 @@ _RX_ANTECEDENT = re.compile(
     r"|\ben\s+(?:19|20)\d{2}\b",
     re.IGNORECASE,
 )
-_RX_FACTEUR_RISQUE = re.compile(
-    r"tabac|tabag|alcool|consommation|poids|ob[ée]sit|surpoids|\bimc\b"
-    r"|activit[ée]\s+physique|s[ée]dentai|sport|cigarette",
-    re.IGNORECASE,
-)
+# P5 : les facteurs de risque sont une LISTE FERMÉE sur le TEXTE DE
+# L'ENTITÉ (filtres_vsm.est_facteur_risque) — l'ancienne règle CONTEXTUELLE
+# (consommation, poids, sport…) routait des diagnostics entiers vers la
+# rubrique (sténose urétrale, Trichomonas…) : une seule entrée juste sur
+# neuf dans les dossiers réels. Un facteur de risque est une exposition, le
+# vocabulaire en est très restreint.
 
 
-def rubrique_de(label: str, contexte: str = "", titre: str | None = None) -> str:
-    """Étiquette CASM2 + contexte → rubrique VSM (fonction pure, testable).
+def rubrique_de(
+    label: str, contexte: str = "", titre: str | None = None, entite: str = ""
+) -> str:
+    """Étiquette CASM2 + contexte + entité → rubrique VSM (pure, testable).
 
     ``contexte`` : texte précédant l'entité (≈120 caractères, borné au titre
     de rubrique courant) + l'entité elle-même, casse quelconque.
     ``titre`` : dernière rubrique titrée rencontrée au-dessus, ou None.
-    Ordre de priorité (sécurité d'abord) : allergies > vaccinations >
-    antécédents > durée courte pour les traitements ; allergies > antécédents
-    > facteurs de risque pour les problèmes.
+    ``entite`` : le texte de l'entité elle-même — les règles P3 (acte
+    chirurgical) et P5 (facteur de risque, liste fermée) portent sur
+    l'ENTITÉ, pas sur son contexte.
+    Ordre de priorité (sécurité d'abord) : allergies > vaccinations > acte
+    chirurgical > antécédents > durée courte pour les traitements ;
+    allergies > antécédents > facteurs de risque pour les problèmes.
     """
     bas = contexte or ""
     if label == "treatment":
@@ -102,10 +98,14 @@ def rubrique_de(label: str, contexte: str = "", titre: str | None = None) -> str
             return "allergies"
         if _RX_VACCIN.search(bas):
             return "vaccinations"
+        # P3 : CASM2 étiquette les actes chirurgicaux « treatment » (exact
+        # de son point de vue) — c'est ici qu'on les envoie aux antécédents :
+        # « excision du pertuis cutané » n'est pas un traitement en cours.
+        if entite and est_un_acte(entite):
+            return "antecedents"
         if titre == "antecedents" or _RX_ANTECEDENT.search(bas):
             # Acte chirurgical ou traitement cité dans l'historique : c'est un
-            # antécédent, pas un traitement en cours (CASM2 étiquette les actes
-            # « treatment » — le contexte décide).
+            # antécédent, pas un traitement en cours.
             return "antecedents"
         if _RX_DUREE_COURTE.search(bas):
             return "points_vigilance"
@@ -117,7 +117,10 @@ def rubrique_de(label: str, contexte: str = "", titre: str | None = None) -> str
             return "allergies"
         if titre == "antecedents" or _RX_ANTECEDENT.search(bas):
             return "antecedents"
-        if titre == "facteurs_risque" or _RX_FACTEUR_RISQUE.search(bas):
+        # P5 : liste fermée sur l'entité (exposition/comportement), ou titre
+        # de rubrique explicite « FACTEURS DE RISQUE ». Tout le reste —
+        # même suggéré par le contexte — est un diagnostic → pathologies.
+        if titre == "facteurs_risque" or (entite and est_facteur_risque(entite)):
             return "facteurs_risque"
         return "pathologies_actives"
     if label == "test":
@@ -147,5 +150,5 @@ def affecter_rubriques(entites: list[Entite], texte: str) -> list[tuple[Entite, 
             else:
                 break
         contexte = texte[max(naissance, ent.debut - CONTEXTE_AVANT) : ent.fin]
-        sorties.append((ent, rubrique_de(ent.label, contexte, titre)))
+        sorties.append((ent, rubrique_de(ent.label, contexte, titre, ent.texte)))
     return sorties

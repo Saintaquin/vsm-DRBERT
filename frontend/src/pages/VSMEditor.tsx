@@ -259,6 +259,14 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
                               {item.code_normalise.systeme} {item.code_normalise.code} · {item.code_normalise.libelle}
                             </span>
                           )}
+                          {item.occurrences != null && item.occurrences > 1 && (
+                            <span>
+                              {item.occurrences} mentions
+                              {item.pages && item.pages.length > 0
+                                ? ` · pages ${item.pages[0]} à ${item.pages[item.pages.length - 1]}`
+                                : ""}
+                            </span>
+                          )}
                           {item.correction_ocr && (
                             <span className="font-medium text-sarcelle">valeur corrigée</span>
                           )}

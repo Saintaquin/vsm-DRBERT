@@ -206,35 +206,47 @@ def test_jetons_anonymisation_exclus(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "label, contexte, titre, attendu",
+    "label, contexte, titre, entite, attendu",
     [
-        ("treatment", "allergie à la", None, "allergies"),
-        ("treatment", "intolérance au", None, "allergies"),
-        ("treatment", "vaccination antigrippale", None, "vaccinations"),
-        ("treatment", "antécédent de", None, "antecedents"),
-        ("treatment", "opéré en 2003", None, "antecedents"),
-        ("treatment", "", "antecedents", "antecedents"),
-        ("treatment", "cure de 7 jours", None, "points_vigilance"),
-        ("treatment", "pendant 2 semaines", None, "points_vigilance"),
-        ("treatment", "traitement en cours", None, "traitements_long_cours"),
+        ("treatment", "allergie à la", None, "", "allergies"),
+        ("treatment", "intolérance au", None, "", "allergies"),
+        ("treatment", "vaccination antigrippale", None, "", "vaccinations"),
+        ("treatment", "antécédent de", None, "", "antecedents"),
+        ("treatment", "opéré en 2003", None, "", "antecedents"),
+        ("treatment", "", "antecedents", "", "antecedents"),
+        ("treatment", "cure de 7 jours", None, "", "points_vigilance"),
+        ("treatment", "pendant 2 semaines", None, "", "points_vigilance"),
+        ("treatment", "traitement en cours", None, "", "traitements_long_cours"),
         # CASM2 étiquette les mentions d'allergie « problem » (test de fumée)
-        ("problem", "allergie à la", None, "allergies"),
-        ("problem", "intolérance au", None, "allergies"),
-        ("problem", "antécédent de", None, "antecedents"),
-        ("problem", "chirurgical", None, "antecedents"),
-        ("problem", "opéré en 2003", None, "antecedents"),
-        ("problem", "en 2003", None, "antecedents"),
-        ("problem", "", "antecedents", "antecedents"),
-        ("problem", "tabagisme, consommation d'alcool", None, "facteurs_risque"),
-        ("problem", "poids 92 kg", None, "facteurs_risque"),
-        ("problem", "activité physique réduite", None, "facteurs_risque"),
-        ("problem", "", "facteurs_risque", "facteurs_risque"),
-        ("problem", "douleur", None, "pathologies_actives"),
-        ("test", "", None, "points_vigilance"),
+        ("problem", "allergie à la", None, "", "allergies"),
+        ("problem", "intolérance au", None, "", "allergies"),
+        ("problem", "antécédent de", None, "", "antecedents"),
+        ("problem", "chirurgical", None, "", "antecedents"),
+        ("problem", "opéré en 2003", None, "", "antecedents"),
+        ("problem", "en 2003", None, "", "antecedents"),
+        ("problem", "", "antecedents", "", "antecedents"),
+        # P5 : facteurs de risque par LISTE FERMÉE sur l'ENTITÉ — plus sur
+        # le contexte (sténose urétrale dans un contexte « consommation »
+        # restait une sténose urétrale).
+        ("problem", "Tabagisme, consommation d'alcool", None,
+         "Tabagisme", "facteurs_risque"),
+        ("problem", "poids 92 kg", None, "poids 92 kg", "pathologies_actives"),
+        ("problem", "activité physique réduite", None,
+         "activité physique réduite", "facteurs_risque"),
+        ("problem", "sevrage tabagique progressif", None,
+         "sténose urétrale", "pathologies_actives"),
+        ("problem", "", "facteurs_risque", "IMC 32", "facteurs_risque"),
+        ("problem", "douleur", None, "", "pathologies_actives"),
+        ("test", "", None, "", "points_vigilance"),
+        # P3 : acte chirurgical étiqueté « treatment » → antécédents.
+        ("treatment", "excision du pertuis cutané", None,
+         "excision du pertuis cutané", "antecedents"),
+        ("treatment", "", None, "cholécystectomie rétrograde", "antecedents"),
+        ("treatment", "", None, "Metformine", "traitements_long_cours"),
     ],
 )
-def test_rubrique_de_cas_par_cas(label, contexte, titre, attendu):
-    assert rubrique_de(label, contexte, titre) == attendu
+def test_rubrique_de_cas_par_cas(label, contexte, titre, entite, attendu):
+    assert rubrique_de(label, contexte, titre, entite) == attendu
 
 
 def test_affecter_rubriques_titre_au_dessus():
@@ -294,7 +306,9 @@ def test_extract_entities_drbert_structure_et_ancrage(monkeypatch):
     valeurs = {rub: [c["valeur"] for c in items] for rub, items in sections.items()}
     assert "appendicectomie" in valeurs["antecedents"]
     assert "pénicilline" in valeurs["allergies"]
-    assert "oméprazole" in valeurs["traitements_long_cours"]
+    # P7 : la posologie « 20 mg » qui suit dans le texte source est
+    # absorbée — l'empan s'étend DANS le texte source, jamais inventé.
+    assert "oméprazole 20 mg" in valeurs["traitements_long_cours"]
     assert "œsophagite chronique" in valeurs["pathologies_actives"]
 
     for items in sections.values():
@@ -357,7 +371,10 @@ def test_en_tete_seule_rejetee(monkeypatch):
     assert "Allergie à la pénicilline" in [
         c["valeur"] for c in sections["allergies"]
     ]
-    assert "Oméprazole" in [c["valeur"] for c in sections["traitements_long_cours"]]
+    # P7 : « 20 mg » suit « Oméprazole » dans le texte source → absorbé.
+    assert "Oméprazole 20 mg" in [
+        c["valeur"] for c in sections["traitements_long_cours"]
+    ]
 
 
 def test_acte_chirurgical_sous_antecedents(monkeypatch):

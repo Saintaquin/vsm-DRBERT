@@ -824,8 +824,18 @@ def valider_element(item: dict, texte_source: str, rubrique: str) -> dict | None
     return _garder()
 
 
-def valider_sortie(brut: dict, texte_source: str) -> dict:
-    """Filtre, reclasse et dédoublonne la sortie brute de l'étape 2."""
+def valider_sortie(
+    brut: dict, texte_source: str, dedup_exact: bool = True
+) -> dict:
+    """Filtre, reclasse et dédoublonne la sortie brute de l'étape 2.
+
+    ``dedup_exact=False`` : conserve les formes exactes répétées — la
+    déduplication sémantique AVAL (filtres_vsm.dedupliquer, P2) les FUSIONNE
+    en comptant les occurrences (« Ulcère bulbaire — 15 mentions ») au lieu
+    de jeter les doublons en silence. Utilisé par la chaîne DrBERT, qui
+    exploite un dossier de 20 ans où la même pathologie revient à chaque
+    compte rendu.
+    """
     propre = {k: [] for k in _VSM_SECTIONS}
     vus = set()
     for rubrique, items in brut.items():
@@ -839,7 +849,7 @@ def valider_sortie(brut: dict, texte_source: str) -> dict:
                 continue
             cible = ok.pop("_reclasser", rubrique)
             cle = (cible, _normalise(ok["valeur"]))
-            if cle in vus:
+            if dedup_exact and cle in vus:
                 continue
             vus.add(cle)
             propre[cible].append(ok)
@@ -1215,18 +1225,55 @@ def _augment_with_drbert(
 # ---------------------------------------------------------------------------
 
 
-def _drbert_vers_entities(text: str) -> list[ExtractedEntity]:
-    """Chaîne DrBERT complète : extraction → rubriques → VALIDATEUR → entités.
+def _drbert_vers_entities(
+    text: str, pages: list[dict] | None = None, journal: list | None = None
+) -> list[ExtractedEntity]:
+    """Chaîne DrBERT complète : extraction → P1 → rubriques → VALIDATEUR →
+    P4 → P7 → entités.
 
     « valeur » et « passage » sont le MÊME extrait exact du texte source :
     découpe aux offsets, jamais de recopie, jamais d'appariement flou
-    (l'ancrage XAI est structurel). Lève DrBERTIndisponible si le modèle
-    est absent ou illisible — c'est l'appelant qui décide du repli.
+    (l'ancrage XAI est structurel — P7 étend l'empan DANS le texte source,
+    la garantie tient). Lève DrBERTIndisponible si le modèle est absent ou
+    illisible — c'est l'appelant qui décide du repli.
+
+    Filtres issus de l'analyse de dossiers réels (filtres_vsm) :
+    - P1 : pages d'antibiogramme / fiches de référence écartées AVANT
+      l'affectation aux rubriques (les 40 antibiotiques testés d'un
+      antibiogramme ne sont pas des prescriptions) — chaque rejet est
+      journalisé (numéro de page, motif, entités supprimées) ;
+    - P4 : termes trop génériques isolés (« douleur » sans qualificatif) ;
+    - P7 : posologies accolées aux traitements (« OGAST 1 gél/j »).
     """
     from .drbert_extractor import extraire_entites
+    from .filtres_vsm import (
+        carte_pages,
+        entites_hors_pages_rejetees,
+        est_trop_generique,
+        etendre_posologie,
+        pages_non_prescriptives,
+    )
     from .rubriques import affecter_rubriques
 
     entites = extraire_entites(text)
+
+    # P1 — pages non prescriptives (antibiogramme, fiche de référence,
+    # densité anormale de traitements) : rejet AVANT les rubriques, tracé.
+    carte = carte_pages(text, pages)
+    if carte:
+        rejets = pages_non_prescriptives(entites, carte)
+        if rejets:
+            entites = entites_hors_pages_rejetees(entites, carte)
+            for r in rejets:
+                _log.info(
+                    "P1 page %s écartée (%s) : %s entité(s) supprimée(s)",
+                    r["page"],
+                    r["motif"],
+                    r["entites_supprimees"],
+                )
+            if journal is not None:
+                journal.extend(rejets)
+
     brut: dict[str, list[dict]] = {}
     for ent, section in affecter_rubriques(entites, text):
         brut.setdefault(section, []).append(
@@ -1238,10 +1285,27 @@ def _drbert_vers_entities(text: str) -> list[ExtractedEntity]:
                 "score": ent.score,
             }
         )
-    valide = valider_sortie(brut, text)
+    # dedup_exact=False : P2 (aval, pipeline) fusionne les répétitions en
+    # comptant les occurrences au lieu de les jeter en silence.
+    valide = valider_sortie(brut, text, dedup_exact=False)
     sortie: list[ExtractedEntity] = []
     for section, items in valide.items():
         for it in items:
+            # P4 — terme trop générique isolé (« douleur », « kyste » sans
+            # qualificatif) : n'apporte ni où, ni quand, ni pourquoi.
+            if est_trop_generique(it["valeur"]):
+                continue
+            # P7 — posologie accolée au traitement : l'empan s'étend vers la
+            # droite tant que le texte est une posologie (≤ 60 caractères).
+            # Découpe du texte source : aucune invention possible.
+            if section == "traitements_long_cours":
+                fin = etendre_posologie(text, int(it.get("offset_fin", 0)))
+                if fin > int(it.get("offset_fin", 0)):
+                    extrait = text[int(it.get("offset_debut", 0)) : fin].strip()
+                    it = dict(it)
+                    it["valeur"] = extrait
+                    it["passage"] = extrait
+                    it["offset_fin"] = fin
             sortie.append(
                 ExtractedEntity(
                     valeur=it["valeur"],
@@ -1282,7 +1346,7 @@ def extract_entities_drbert(
 
 
 def _drbert_avec_repli(
-    text: str, report: dict
+    text: str, report: dict, pages: list[dict] | None = None
 ) -> tuple[list[ExtractedEntity], dict]:
     """Phase DrBERT avec repli tracé — jamais de plantage du traitement.
 
@@ -1290,7 +1354,9 @@ def _drbert_avec_repli(
     - erreur d'inférence → règles, statut « repli_regles » ;
     - sortie DrBERT vide → complément par les règles (tracé), comme la phase
       LLM le fait sur « Sortie LLM vide » ;
-    - sinon → entités DrBERT validées, statut « drbert ».
+    - sinon → entités DrBERT validées, statut « drbert ». Les pages de
+      laboratoire écartées (P1) sont journalisées dans
+      ``report["pages_ecartees"]`` (rejet en masse = doit être auditable).
     """
     import time
 
@@ -1304,7 +1370,7 @@ def _drbert_avec_repli(
 
     t0 = time.perf_counter()
     try:
-        entites = _drbert_vers_entities(text)
+        entites = _drbert_vers_entities(text, pages=pages, journal=report.setdefault("pages_ecartees", []))
     except DrBERTIndisponible as exc:
         _log.info("DrBERT indisponible — moteur de règles : %s", exc)
         report["statut"] = "modele_absent"
@@ -1424,7 +1490,7 @@ def merite_appel_llm(segment: str) -> bool:
 
 
 def extract_entities_with_report(
-    text: str, engine: str = "rules", progress=None
+    text: str, engine: str = "rules", progress=None, pages: list[dict] | None = None
 ) -> tuple[list[ExtractedEntity], dict]:
     """Extraction + RAPPORT du moteur réellement utilisé.
 
@@ -1440,11 +1506,16 @@ def extract_entities_with_report(
       règles en cas d'échec.
     - ``rules`` : moteur de règles (toujours disponible).
 
+    ``pages`` (optionnel) : les pages OCR ``{page, text}`` du document —
+    nécessaires aux filtres par page (P1 antibiogramme, P6 en-tête). Sans
+    pages (appels directs, tests), les filtres par page se désactivent
+    proprement.
+
     ``progress(done, total)`` (optionnel) est appelé entre les segments LLM
     pour l'affichage.
 
     Rapport : {"moteur", "statut", "raison", "nb_corrections_ocr",
-    "duree_extraction_sec", "modele", "nb_chunks"}."""
+    "duree_extraction_sec", "modele", "nb_chunks", "pages_ecartees?"}."""
     report: dict = {
         "moteur": NLP_ENGINE_RULES,
         "statut": "regles",
@@ -1463,7 +1534,7 @@ def extract_entities_with_report(
 
     engine = _normaliser_moteur(engine)
     if engine == "drbert":
-        return _drbert_avec_repli(text, report)
+        return _drbert_avec_repli(text, report, pages=pages)
     if engine != "llm":
         return _regles(), report
 

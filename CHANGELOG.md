@@ -2,6 +2,68 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.0] — 2026-08-24
+
+### Filtres VSM — analyse de deux dossiers réels (correctifs P1-P7)
+
+Analyse de deux VSM réels produits par DrBERT (75 pages, 20 ans de suivi,
+nominatifs) : l'extraction était correcte mais le CLASSEMENT et le VOLUME
+posaient problème (199 éléments pour l'un, ~290 pour l'autre). Sept
+correctifs priorisés — P1 clinique, P2 lisibilité, le reste de la finition —
+dans le nouveau module `src/extraction_nlp/filtres_vsm.py` (fonctions
+pures, docstrings, sans dépendance circulaire).
+
+- **P1 — Pages non prescriptives écartées AVANT les rubriques** (risque
+  clinique : 40 antibiotiques d'un ANTIBIOGRAMME présentés comme traitements
+  au long cours, « maladie des griffes du chat » d'une fiche de référence en
+  pathologies). Signaux : vocabulaire d'antibiogramme (CMI, souche,
+  S/I/R…), fiches de référence (notice, valeurs de référence…), densité
+  anormale (> 10 traitements/page). **Chaque rejet est journalisé** dans le
+  rapport NLP (`pages_ecartees` : page, motif, entités supprimées) — un
+  rejet en masse doit être auditable.
+- **P2 — Déduplication sémantique par rubrique** (143 pathologies dont ~30
+  distinctes) : 3 passes — même code CIM-10/ATC → même forme normalisée →
+  similarité rapidfuzz `token_set_ratio ≥ 88` (absorption des fautes d'OCR
+  par chaînage de clusters). Latéralité droite/gauche bloquée (kyste de
+  l'ovaire droit ≠ gauche), familles distinctes jamais fusionnées (kyste
+  hépatique / urétral). Représentant = forme la plus fréquente (jamais la
+  plus longue) ; chaque entrée fusionnée porte `occurrences` et `pages`
+  (« Ulcère bulbaire linéaire — 15 mentions, pages 8 à 62 »), affichés dans
+  l'éditeur VSM.
+- **P3 — Actes chirurgicaux → antécédents** (CASM2 les étiquette
+  « treatment ») : liste de mots (excision, pose de stent, biopsie…) et
+  suffixes (-ectomie, -otomie, -oplastie…) ; « cholécystectomie
+  rétrograde » reconnue en sous-chaîne.
+- **P4 — Termes trop génériques isolés rejetés** (« douleur », « kyste »,
+  « traitement médical » sans qualificatif) : ni où, ni quand, ni pourquoi.
+- **P5 — Facteurs de risque par LISTE FERMÉE sur l'entité** (tabac, alcool,
+  obésité, ménopause, exposition professionnelle…) : l'ancienne règle
+  CONTEXTUELLE routait des diagnostics entiers (sténose urétrale,
+  Trichomonas…) — une seule entrée juste sur neuf dans les dossiers réels ;
+  tout ce qui n'y figure pas retourne en pathologies actives.
+- **P6 — En-tête de cabinet supprimé** (« Maladies du Foie », papier à
+  lettres) : zone d'en-tête étendue à 500 caractères ou jusqu'au premier
+  titre de rubrique (borne 1200) ; une forme présente dans l'en-tête de
+  PLUS de 3 pages est du papier à lettres, pas un diagnostic.
+- **P7 — Posologies accolées aux traitements** (« OGAST » → « OGAST 1
+  gél/j en permanence ») : l'empan s'étend vers la droite tant que le texte
+  est une posologie (≤ 60 caractères) — **découpe du texte source
+  uniquement, la garantie anti-hallucination tient** (vérifié E2E :
+  passage = valeur).
+- **Carte des pages** : frontières reconstruites par longueurs cumulées du
+  join `\n\n` (approximative — les tokens de pseudonymisation peuvent
+  diverger par page) ; texte non reconstruisable → filtres par page
+  désactivés proprement. Chaque entité porte sa page dans
+  `source.page` (XAI).
+- **Garde-fous** : `valider_sortie(dedup_exact=False)` pour la chaîne
+  DrBERT (les répétitions sont FUSIONNÉES avec comptage au lieu d'être
+  jetées en silence) ; `rubrique_de()` gagne le paramètre `entite` (les
+  règles P3/P5 portent sur l'entité, pas sur son contexte).
+- **Tests** : +35 (un par correctif, cas réels mesurés + intégration
+  `run_pipeline` multi-pages) → **242 tests verts** ; frontend build OK ;
+  E2E vrai modèle OK (P3/P7 visibles : « pose de stent » → antécédents,
+  « Metformine 1000 mg matin »).
+
 ## [1.1.0] — 2026-08-22
 
 ### DrBERT-MedicalNER-FR — NER médical français (extraction d'entités, CPU léger)
