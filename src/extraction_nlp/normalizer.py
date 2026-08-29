@@ -42,10 +42,20 @@ def _best_match(query: str, choices: dict[str, dict], threshold: float = 72.0):
     return None, 0.0
 
 
+# Audit du normalisateur (2026-08-24, outputs/AUDIT_NORMALISATEUR.md) : avec
+# le seuil historique de 72, « maladie coronaire » recevait N18 « maladie
+# rénale chronique » (0,73) et « maladie de Basedow » G20 « maladie de
+# Parkinson » (0,74) — des libellés partageant des mots vides fusionnent à
+# ~73. Mesuré sur l'échantillon : TOUS les codes faux ≤ 0,74, TOUS les codes
+# corrects ≥ 0,80 — frontière franche. Le seuil 78 ne garde que ce qui est
+# au-dessus de la zone grise ; l'absence de code vaut mieux qu'un code faux.
+SEUIL_CIM10 = 78.0
+
+
 def normalize_diagnosis(text: str) -> dict:
     rows = _load("cim10_fr.tsv")
     choices = {_norm(r["libelle"]): r for r in rows}
-    row, score = _best_match(text, choices)
+    row, score = _best_match(text, choices, threshold=SEUIL_CIM10)
     if row is None:
         return {"code_cim10": None, "label_official": None, "confidence": 0.0}
     return {

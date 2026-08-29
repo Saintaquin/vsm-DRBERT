@@ -32,8 +32,11 @@ se désactivent proprement (dégradation sûre, jamais de plantage).
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
+
+_log = logging.getLogger("vsm")
 
 # ---------------------------------------------------------------------------
 # Normalisation commune (accents, casse, espaces) — comparaison tolérante.
@@ -70,6 +73,78 @@ TITRES_RX = re.compile(
     r")\s*:?",
     re.IGNORECASE | re.MULTILINE,
 )
+
+
+# ---------------------------------------------------------------------------
+# Journal des rejets — chaque entité écartée est TRACÉE avec sa règle
+# ---------------------------------------------------------------------------
+
+
+def tracer_rejet(
+    journal: list | None,
+    valeur: str,
+    score: float,
+    regle: str,
+    detail: str = "",
+    offset_debut: int | None = None,
+    page: int | None = None,
+) -> dict | None:
+    """Journalise un rejet d'entité (observabilité — la demande prioritaire).
+
+    Historique : le validateur non branché pendant trois itérations, le repli
+    global sur les règles invisible dans les logs, une pathologie disparue
+    sans trace — à chaque fois le problème n'était pas le code mais
+    l'ABSENCE D'OBSERVABILITÉ. Chaque entité écartée par un filtre (étape 0,
+    P1, validateur, P4, P6) produit une entrée structurée dans le rapport NLP
+    (``rejets``) ; ``finaliser_rejets`` résout les pages puis émet UNE ligne
+    de journal par rejet, au format fixe :
+
+        rejet | page=41 | «maladie rénale chronique» | score=0.90 | regle=P6 | detail=…
+
+    Les valeurs proviennent du texte ANONYMISÉ (la pseudonymisation précède
+    l'extraction) : aucune PII ne transite. ``journal=None`` → no-op (les
+    appels sans rapport, ex. règles, ne changent pas de comportement).
+    """
+    if journal is None:
+        return None
+    entree = {
+        "page": page,
+        "valeur": valeur,
+        "score": round(float(score or 0.0), 3),
+        "regle": regle,
+        "detail": detail,
+    }
+    if offset_debut is not None:
+        entree["offset_debut"] = offset_debut
+    journal.append(entree)
+    return entree
+
+
+def ligne_rejet(entree: dict) -> str:
+    """Ligne de journal au format fixe (une par rejet, greppable)."""
+    page = entree.get("page")
+    return (
+        f"rejet | page={page if page is not None else '?'} "
+        f"| «{entree.get('valeur', '')}» "
+        f"| score={float(entree.get('score', 0.0)):.2f} "
+        f"| regle={entree.get('regle', '?')} "
+        f"| detail={entree.get('detail') or '—'}"
+    )
+
+
+def finaliser_rejets(journal: list, carte: list[dict]) -> list:
+    """Résout les pages des rejets (offset → page) puis trace chaque ligne.
+
+    Les rejets précoces (filtres d'étape 0, validateur) connaissent leur
+    offset mais pas leur page — la carte est construite en amont du pipeline,
+    pas de l'extracteur. Appelé UNE fois par run_pipeline, quand la carte est
+    disponible : muter les entrées (page) puis journaliser.
+    """
+    for entree in journal:
+        if entree.get("page") is None and "offset_debut" in entree:
+            entree["page"] = page_de(carte, entree["offset_debut"])
+        _log.info(ligne_rejet(entree))
+    return journal
 
 
 # ---------------------------------------------------------------------------
@@ -302,23 +377,25 @@ def zone_en_tete(texte_page: str) -> str:
     return (texte_page or "")[:ZONE_ENTETE]
 
 
-def formes_en_tete_repetees(formes: list[str], carte: list[dict]) -> set[str]:
+def formes_en_tete_repetees(formes: list[str], carte: list[dict]) -> dict[str, int]:
     """Formes apparaissant dans l'en-tête de PLUS de 3 pages (P6).
 
     Un vrai diagnostic répété est dispersé dans le corps du texte ; un
-    en-tête est toujours au même endroit, page après page.
+    en-tête est toujours au même endroit, page après page. Retourne
+    {forme normalisée: nombre de pages} pour les formes rejetées — le
+    nombre alimente le détail du rejet journalisé.
     """
     if not carte or not formes:
-        return set()
+        return {}
     zones = [normaliser(zone_en_tete(p.get("texte", ""))) for p in carte]
-    rejetees: set[str] = set()
+    rejetees: dict[str, int] = {}
     for forme in formes:
         bas = normaliser(forme)
         if not bas:
             continue
         n_pages = sum(1 for z in zones if bas in z)
         if n_pages > 3:
-            rejetees.add(bas)
+            rejetees[bas] = n_pages
     return rejetees
 
 

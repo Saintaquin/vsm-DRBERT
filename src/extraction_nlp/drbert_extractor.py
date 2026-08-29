@@ -472,7 +472,7 @@ def reinitialiser() -> None:
 # ---------------------------------------------------------------------------
 
 
-def extraire_entites(texte: str) -> list[Entite]:
+def extraire_entites(texte: str, journal: list | None = None) -> list[Entite]:
     """Extrait les entités DrBERT-CASM2, filtres de l'étape 0 appliqués.
 
     - offsets ABSOLUS dans ``texte`` (le texte du document) ;
@@ -481,9 +481,16 @@ def extraire_entites(texte: str) -> list[Entite]:
       « test » écartée sauf VSM_DRBERT_KEEP_TESTS, aucun chevauchement avec
       un jeton d'anonymisation.
 
+    ``journal`` (optionnel) : chaque entité écartée y est TRACÉE avec la
+    règle responsable (filtres_vsm.tracer_rejet) — plus jamais de rejet
+    invisible. Les valeurs viennent du texte anonymisé : aucune PII dans le
+    journal. ``journal=None`` → comportement inchangé.
+
     Lève DrBERTIndisponible si le modèle est absent/illisible — jamais de
     plantage silencieux : l'appelant bascule et le trace.
     """
+    from .filtres_vsm import tracer_rejet
+
     if not texte or not texte.strip():
         return []
     moteur = _get_moteur()
@@ -496,16 +503,37 @@ def extraire_entites(texte: str) -> list[Entite]:
     gardees: list[Entite] = []
     for ent in entites:
         if ent.score < seuil:
+            tracer_rejet(
+                journal, ent.texte, ent.score, "extracteur_score",
+                f"score {ent.score:.2f} < seuil {seuil:.2f}",
+                offset_debut=ent.debut,
+            )
             continue
         if not bords_alignes(texte, ent.debut, ent.fin):
+            tracer_rejet(
+                journal, ent.texte, ent.score, "extracteur_bord_mot",
+                "entité au milieu d'un mot (fragment de sous-mot)",
+                offset_debut=ent.debut,
+            )
             continue
         if ent.label == "test" and not garder:
+            tracer_rejet(
+                journal, ent.texte, ent.score, "extracteur_label_test",
+                "étiquette « test » écartée (VSM_DRBERT_KEEP_TESTS pour garder)",
+                offset_debut=ent.debut,
+            )
             continue
         if any(ent.debut < fin_j and debut_j < ent.fin for debut_j, fin_j in jetons):
+            tracer_rejet(
+                journal, ent.texte, ent.score, "extracteur_anonymisation",
+                "chevauche un jeton d'anonymisation",
+                offset_debut=ent.debut,
+            )
             continue
         gardees.append(ent)
     if len(gardees) < len(entites):
-        # Aucune PII dans les logs : compteurs uniquement.
+        # Aucune PII dans les logs : compteurs uniquement (le détail par
+        # entité, sans PII, est dans le journal des rejets).
         _log.debug(
             "drbert : %d entité(s) brute(s) → %d après filtres (seuil=%.2f, "
             "tests=%s)",

@@ -38,7 +38,13 @@ export interface ChampTrace {
   moteur_nlp?: string;
   correction_ocr?: boolean;
   origine?: "llm" | "regles" | "drbert" | string;
-  code_normalise?: { systeme: string; code: string; libelle: string } | null;
+  code_normalise?: {
+    systeme: string; code: string; libelle: string;
+    /** Appariement flou < 0,85 (audit 2026-08-24) : le code est affiché
+     *  « à vérifier » — incertain, jamais comme un fait établi. */
+    a_verifier?: boolean;
+    confiance_normalisation?: number;
+  } | null;
   /** Déduplication sémantique (P2) : nombre de mentions fusionnées et pages
    *  où l'entrée apparaît — restitue la chronicité d'un dossier long. */
   occurrences?: number;

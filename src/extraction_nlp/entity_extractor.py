@@ -751,16 +751,15 @@ def _normalise(texte: str) -> str:
     return re.sub(r"\s+", " ", sans_accent).strip().lower()
 
 
-def valider_element(item: dict, texte_source: str, rubrique: str) -> dict | None:
-    """Renvoie l'élément nettoyé, ou None s'il doit être rejeté.
+def _valider_raison(
+    item: dict, texte_source: str, rubrique: str
+) -> tuple[dict | None, tuple[str, str] | None]:
+    """Validation avec RAISON du rejet — l'observabilité du validateur.
 
-    Le rejet est la valeur par défaut : un élément douteux est supprimé plutôt
-    que présenté à un médecin avec un score de confiance rassurant.
-
-    Les clés supplémentaires de ``item`` (offsets, score du modèle…) sont
-    PRÉSERVÉES dans l'élément validé : le moteur DrBERT s'en sert pour
-    l'ancrage XAI et la confiance réelle — le validateur est commun à tous
-    les moteurs, il ne doit ni perdre ni inventer d'information.
+    Retourne (élément validé ou None, (règle, détail) ou None). Mêmes règles
+    que ``valider_element`` (qui l'enveloppe) : le rejet reste la valeur par
+    défaut, mais chaque rejet est désormais NOMMÉ — plus jamais un filtre
+    invisible qui fait disparaître une entité sans trace.
     """
 
     def _garder(extra_reclasse: str | None = None) -> dict:
@@ -777,55 +776,101 @@ def valider_element(item: dict, texte_source: str, rubrique: str) -> dict | None
     # 1. Ancrage : le passage doit exister mot pour mot dans le document.
     #    C'est ce test qui rend toute fuite de few-shot impossible.
     if not passage or _normalise(passage) not in _normalise(texte_source):
-        return None
+        return None, ("validateur_ancrage", "passage introuvable dans le texte source")
 
     # 2. Longueurs : ni fragment, ni paragraphe.
     if not 3 <= len(valeur) <= 120 or len(passage) > 250:
-        return None
+        detail = (
+            f"longueur {len(valeur)} car. (limites 3–120) ou passage "
+            f"{len(passage)} car. (> 250)"
+        )
+        return None, ("validateur_longueur", detail)
     if valeur.count(".") >= 2 or len(valeur.split()) > 18:
-        return None
+        detail = (
+            f"{valeur.count('.')} point(s) ou {len(valeur.split())} mots "
+            "(limites : < 2 points, ≤ 18 mots)"
+        )
+        return None, ("validateur_longueur", detail)
 
     # 3. Aucun pseudonyme ne doit atteindre le VSM.
     if _RX_PSEUDO.search(valeur):
-        return None
+        return None, ("validateur_pseudo", "jeton de pseudonymisation dans la valeur")
 
     # 4. En-tête, coordonnées, matériel de laboratoire.
     bas = _normalise(valeur)
-    if any(mot in bas for mot in _BLOCKLIST):
-        return None
+    mot_banni = next((mot for mot in _BLOCKLIST if mot in bas), None)
+    if mot_banni is not None:
+        return None, (
+            "validateur_blocklist",
+            f"terme non clinique « {mot_banni} » (en-tête, labo, administratif)",
+        )
     #    En-tête de rubrique seul (« ALLERGIES », « Antécédents : ») : le
     #    modèle DrBERT peut l'étiqueter comme entité — bruit, rejeté.
     if _RX_ENTETE_SEULE.match(valeur):
-        return None
+        return None, ("validateur_entete_seule", "en-tête de rubrique seul, sans contenu")
 
     # 5. Fragments sans sens : trop peu de lettres, ou libellé vide.
     lettres = sum(c.isalpha() for c in valeur)
     if lettres < 3 or lettres / max(len(valeur), 1) < 0.45:
-        return None
+        detail = (
+            f"{lettres} lettres sur {len(valeur)} caractères : fragment "
+            "sans sens clinique"
+        )
+        return None, ("validateur_fragments", detail)
     if bas in ("(s)", "s", "familiaux", "aucun", "aucune", "1 docteur"):
-        return None
+        return None, ("validateur_fragments", f"libellé vide de sens « {bas} »")
 
     # 6. Règles propres aux traitements.
     if rubrique == "traitements_long_cours":
         if bas in _CLASSES_SEULES:  # « antibiotique », « inhibiteur »
-            return None
+            return None, (
+                "validateur_classe_seule",
+                f"famille de médicaments seule « {bas} » : il faut un nom de produit",
+            )
         if " et " in bas or "/" in valeur:  # « MAALOX et RANIPLEX »
-            return None
+            return None, (
+                "validateur_traitement_compose",
+                "contient « et » ou « / » : plusieurs traitements en une valeur",
+            )
         if not re.search(r"[A-Za-zÀ-ÿ]{4,}", valeur):
-            return None
+            return None, (
+                "validateur_mot_court",
+                "aucun mot de ≥ 4 lettres : pas un nom de médicament",
+            )
         if _RX_DUREE_COURTE.search(passage):
             # Cure courte : information vraie, rubrique fausse.
-            return _garder("points_vigilance")
+            return _garder("points_vigilance"), None
 
     # 7. Valeurs biologiques chiffrées : hors périmètre du VSM.
     if rubrique == "points_vigilance" and _RX_BIO.search(valeur):
-        return None
+        return None, ("validateur_bio", "valeur biologique chiffrée, hors VSM")
 
-    return _garder()
+    return _garder(), None
+
+
+def valider_element(item: dict, texte_source: str, rubrique: str) -> dict | None:
+    """Renvoie l'élément nettoyé, ou None s'il doit être rejeté.
+
+    Le rejet est la valeur par défaut : un élément douteux est supprimé plutôt
+    que présenté à un médecin avec un score de confiance rassurant.
+
+    Les clés supplémentaires de ``item`` (offsets, score du modèle…) sont
+    PRÉSERVÉES dans l'élément validé : le moteur DrBERT s'en sert pour
+    l'ancrage XAI et la confiance réelle — le validateur est commun à tous
+    les moteurs, il ne doit ni perdre ni inventer d'information.
+
+    La RAISON du rejet est disponible via ``_valider_raison`` (journal des
+    rejets) — cette enveloppe préserve la signature historique.
+    """
+    ok, _raison = _valider_raison(item, texte_source, rubrique)
+    return ok
 
 
 def valider_sortie(
-    brut: dict, texte_source: str, dedup_exact: bool = True
+    brut: dict,
+    texte_source: str,
+    dedup_exact: bool = True,
+    journal: list | None = None,
 ) -> dict:
     """Filtre, reclasse et dédoublonne la sortie brute de l'étape 2.
 
@@ -835,7 +880,14 @@ def valider_sortie(
     de jeter les doublons en silence. Utilisé par la chaîne DrBERT, qui
     exploite un dossier de 20 ans où la même pathologie revient à chaque
     compte rendu.
+
+    ``journal`` (optionnel) : chaque rejet du validateur y est tracé avec sa
+    RÈGLE (validateur_ancrage, validateur_longueur, validateur_blocklist…) —
+    le validateur a fait disparaître des entités sans trace pendant trois
+    itérations ; plus jamais. ``journal=None`` → comportement inchangé.
     """
+    from .filtres_vsm import tracer_rejet
+
     propre = {k: [] for k in _VSM_SECTIONS}
     vus = set()
     for rubrique, items in brut.items():
@@ -844,8 +896,17 @@ def valider_sortie(
         for item in items:
             if not isinstance(item, dict):
                 continue
-            ok = valider_element(item, texte_source, rubrique)
+            ok, raison = _valider_raison(item, texte_source, rubrique)
             if ok is None:
+                if raison is not None:
+                    tracer_rejet(
+                        journal,
+                        (item.get("valeur") or "").strip(),
+                        float(item.get("score", 0.0) or 0.0),
+                        raison[0],
+                        raison[1],
+                        offset_debut=item.get("offset_debut"),
+                    )
                 continue
             cible = ok.pop("_reclasser", rubrique)
             cle = (cible, _normalise(ok["valeur"]))
@@ -1226,7 +1287,9 @@ def _augment_with_drbert(
 
 
 def _drbert_vers_entities(
-    text: str, pages: list[dict] | None = None, journal: list | None = None
+    text: str,
+    pages: list[dict] | None = None,
+    report: dict | None = None,
 ) -> list[ExtractedEntity]:
     """Chaîne DrBERT complète : extraction → P1 → rubriques → VALIDATEUR →
     P4 → P7 → entités.
@@ -1237,33 +1300,60 @@ def _drbert_vers_entities(
     la garantie tient). Lève DrBERTIndisponible si le modèle est absent ou
     illisible — c'est l'appelant qui décide du repli.
 
+    ``report`` (optionnel) reçoit deux journaux d'audit :
+    - ``rejets`` : une entrée PAR ENTITÉ écartée (règle responsable : filtres
+      d'étape 0, P1, validateur, P4) — l'observabilité demandée après la
+      disparition inexpliquée d'entités réelles ;
+    - ``pages_ecartees`` : le rejet de masse P1 vu par PAGE (motif, volume) —
+      la vue d'ensemble de l'audit.
+
     Filtres issus de l'analyse de dossiers réels (filtres_vsm) :
     - P1 : pages d'antibiogramme / fiches de référence écartées AVANT
       l'affectation aux rubriques (les 40 antibiotiques testés d'un
-      antibiogramme ne sont pas des prescriptions) — chaque rejet est
-      journalisé (numéro de page, motif, entités supprimées) ;
+      antibiogramme ne sont pas des prescriptions) ;
     - P4 : termes trop génériques isolés (« douleur » sans qualificatif) ;
     - P7 : posologies accolées aux traitements (« OGAST 1 gél/j »).
     """
     from .drbert_extractor import extraire_entites
     from .filtres_vsm import (
         carte_pages,
-        entites_hors_pages_rejetees,
         est_trop_generique,
         etendre_posologie,
+        page_de,
         pages_non_prescriptives,
+        tracer_rejet,
     )
     from .rubriques import affecter_rubriques
 
-    entites = extraire_entites(text)
+    journal = report.setdefault("rejets", []) if report is not None else None
+    journal_pages = (
+        report.setdefault("pages_ecartees", []) if report is not None else None
+    )
+    carte = carte_pages(text, pages)
+    entites = extraire_entites(text, journal=journal)
 
     # P1 — pages non prescriptives (antibiogramme, fiche de référence,
-    # densité anormale de traitements) : rejet AVANT les rubriques, tracé.
-    carte = carte_pages(text, pages)
+    # densité anormale de traitements) : rejet AVANT les rubriques, tracé
+    # page par page ET entité par entité.
     if carte:
         rejets = pages_non_prescriptives(entites, carte)
         if rejets:
-            entites = entites_hors_pages_rejetees(entites, carte)
+            motifs = {r["page"]: r["motif"] for r in rejets}
+            for p in carte:
+                if p["page"] not in motifs:
+                    continue
+                for e in entites:
+                    if p["debut"] <= e.debut < p["fin"]:
+                        tracer_rejet(
+                            journal,
+                            e.texte,
+                            e.score,
+                            "P1_page_non_prescriptive",
+                            f"page {p['page']} : {motifs[p['page']]}",
+                            offset_debut=e.debut,
+                            page=p["page"],
+                        )
+            entites = [e for e in entites if page_de(carte, e.debut) not in motifs]
             for r in rejets:
                 _log.info(
                     "P1 page %s écartée (%s) : %s entité(s) supprimée(s)",
@@ -1271,8 +1361,8 @@ def _drbert_vers_entities(
                     r["motif"],
                     r["entites_supprimees"],
                 )
-            if journal is not None:
-                journal.extend(rejets)
+            if journal_pages is not None:
+                journal_pages.extend(rejets)
 
     brut: dict[str, list[dict]] = {}
     for ent, section in affecter_rubriques(entites, text):
@@ -1287,13 +1377,21 @@ def _drbert_vers_entities(
         )
     # dedup_exact=False : P2 (aval, pipeline) fusionne les répétitions en
     # comptant les occurrences au lieu de les jeter en silence.
-    valide = valider_sortie(brut, text, dedup_exact=False)
+    valide = valider_sortie(brut, text, dedup_exact=False, journal=journal)
     sortie: list[ExtractedEntity] = []
     for section, items in valide.items():
         for it in items:
             # P4 — terme trop générique isolé (« douleur », « kyste » sans
             # qualificatif) : n'apporte ni où, ni quand, ni pourquoi.
             if est_trop_generique(it["valeur"]):
+                tracer_rejet(
+                    journal,
+                    it["valeur"],
+                    float(it.get("score", 0.0)),
+                    "P4_terme_generique",
+                    "terme trop générique isolé (sans qualificatif)",
+                    offset_debut=it.get("offset_debut"),
+                )
                 continue
             # P7 — posologie accolée au traitement : l'empan s'étend vers la
             # droite tant que le texte est une posologie (≤ 60 caractères).
@@ -1354,9 +1452,10 @@ def _drbert_avec_repli(
     - erreur d'inférence → règles, statut « repli_regles » ;
     - sortie DrBERT vide → complément par les règles (tracé), comme la phase
       LLM le fait sur « Sortie LLM vide » ;
-    - sinon → entités DrBERT validées, statut « drbert ». Les pages de
-      laboratoire écartées (P1) sont journalisées dans
-      ``report["pages_ecartees"]`` (rejet en masse = doit être auditable).
+    - sinon → entités DrBERT validées, statut « drbert ». Deux journaux
+      d'audit dans le rapport : ``pages_ecartees`` (rejet de masse P1 vu par
+      page) et ``rejets`` (une entrée PAR ENTITÉ écartée, règle responsable)
+      — un rejet invisible est un rejet inauditable.
     """
     import time
 
@@ -1370,7 +1469,7 @@ def _drbert_avec_repli(
 
     t0 = time.perf_counter()
     try:
-        entites = _drbert_vers_entities(text, pages=pages, journal=report.setdefault("pages_ecartees", []))
+        entites = _drbert_vers_entities(text, pages=pages, report=report)
     except DrBERTIndisponible as exc:
         _log.info("DrBERT indisponible — moteur de règles : %s", exc)
         report["statut"] = "modele_absent"

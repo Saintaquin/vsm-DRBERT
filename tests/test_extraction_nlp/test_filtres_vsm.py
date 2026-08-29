@@ -27,9 +27,11 @@ from src.extraction_nlp.filtres_vsm import (
     est_un_acte,
     etendre_posologie,
     formes_en_tete_repetees,
+    ligne_rejet,
     page_de,
     page_non_prescriptive,
     pages_non_prescriptives,
+    tracer_rejet,
     zone_en_tete,
 )
 from src.extraction_nlp.rubriques import rubrique_de
@@ -570,3 +572,194 @@ def test_integration_pipeline_p1_a_p7(monkeypatch):
     assert pathos[0]["pages"] == [1, 3]
     # La page de chaque entité est tracée à la source (XAI).
     assert pathos[0]["source"]["page"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Journal des rejets — chaque entité écartée est TRACÉE avec sa règle
+# ---------------------------------------------------------------------------
+
+
+def test_ligne_rejet_format_fixe():
+    """Le format de ligne est FIXE et greppable (demande explicite) :
+    rejet | page=41 | «valeur» | score=0.90 | regle=… | detail=…"""
+    ligne = ligne_rejet(
+        {"page": 41, "valeur": "maladie rénale chronique",
+         "score": 0.9, "regle": "P6_entete_repété", "detail": "12 pages"}
+    )
+    assert ligne == (
+        "rejet | page=41 | «maladie rénale chronique» | score=0.90 "
+        "| regle=P6_entete_repété | detail=12 pages"
+    )
+    # Page inconnue (rejet précoce, avant la carte) : « ? », jamais de crash.
+    assert ligne_rejet({"valeur": "MRC", "score": 0.5, "regle": "x",
+                        "detail": ""}).startswith("rejet | page=? | «MRC»")
+
+
+def test_tracer_rejet_sans_journal_est_un_noop():
+    """journal=None (appels historiques, moteur règles) : aucun changement."""
+    assert tracer_rejet(None, "douleur", 0.9, "P4", "test") is None
+
+
+def test_journal_rejets_par_regle(monkeypatch):
+    """INTÉGRATION : chaque étage qui écarte une entité produit une entrée
+    NOMMÉE dans report['rejets'] — validateur, P1, P4, P6. Plus jamais de
+    disparition sans trace (constat ABRICOT : pathologies absentes du VSM
+    sans aucune trace du responsable)."""
+    from src.extraction_nlp import drbert_extractor as dtx
+    from src.extraction_nlp.drbert_extractor import Entite
+    from src.extraction_nlp.pipeline import run_pipeline
+
+    entete = "Cabinet Dr X - Consultations Maladies du Foie\n"
+    remplissage = "Compte rendu de consultation détaillé. " * 40  # > 500 car.
+    pages = [
+        # Page 1 : un terme générique (P4) + l'en-tête répété (P6) + une
+        # entité clinique saine.
+        entete + remplissage + "\nDouleur. Kyste hépatique stable.",
+        # Page 2 : antibiogramme (P1) — la pénicilline disparaît AVEC sa page.
+        entete + remplissage + "\nANTIBIOGRAMME souche E. coli, CMI "
+                               "pénicilline résistante.",
+        # Page 3 : contenu clinique sain.
+        entete + remplissage + "\nTabagisme actif. OGAST 1 gél/j.",
+        # Page 4 : pour que l'en-tête dépasse la barre des 3 pages (P6).
+        entete + remplissage + "\nPoursuite du suivi habituel.",
+    ]
+    texte = "\n\n".join(pages)
+    ocr_json = {
+        "document_id": "doc_journal",
+        "ocr_engine": "tesseract",
+        "text": texte,
+        "pages": [
+            {"page": i + 1, "text": t, "confidence": 0.9}
+            for i, t in enumerate(pages)
+        ],
+    }
+
+    def _ent(label: str, mot: str, apres: int = 0) -> Entite:
+        debut = texte.index(mot, apres)
+        return Entite(label, mot, debut, debut + len(mot), 0.9)
+
+    sep1 = texte.index("\n\n")
+    debut_p3 = texte.index("\n\n", sep1 + 2) + 2
+    entites = [
+        _ent("problem", "Douleur"),                 # P4 : générique isolé
+        _ent("problem", "Kyste hépatique"),         # survit
+        _ent("problem", "Maladies du Foie"),        # P6 : en-tête ×4 pages
+        _ent("treatment", "pénicilline", sep1),     # P1 : page antibiogramme
+        _ent("problem", "Tabagisme actif", debut_p3),
+        _ent("treatment", "OGAST", debut_p3),
+    ]
+
+    class _FakeMoteur:
+        def annoter(self, t: str) -> list[Entite]:
+            return list(entites)
+
+    monkeypatch.setattr(dtx, "_MOTEUR", _FakeMoteur())
+
+    vsm = run_pipeline(ocr_json, nlp_engine="drbert")
+    rejets = vsm["provenance"]["nlp"]["rejets"]
+
+    par_regle: dict[str, list[dict]] = {}
+    for r in rejets:
+        par_regle.setdefault(r["regle"], []).append(r)
+
+    # P4 : « Douleur » isolé, avec sa page.
+    assert any(
+        r["valeur"] == "Douleur" and r["page"] == 1
+        for r in par_regle["P4_terme_generique"]
+    )
+    # P1 : la pénicilline rejetée avec le motif de SA page.
+    assert any(
+        r["valeur"] == "pénicilline" and r["page"] == 2
+        and "antibiogramme" in r["detail"]
+        for r in par_regle["P1_page_non_prescriptive"]
+    )
+    # P6 : l'en-tête de cabinet rejeté avec son nombre de pages.
+    assert any(
+        r["valeur"] == "Maladies du Foie" and r["page"] == 1
+        and "4 pages" in r["detail"]
+        for r in par_regle["P6_entete_repété"]
+    )
+    # Les survivants ne sont PAS dans le journal.
+    valeurs_rejetees = {r["valeur"] for r in rejets}
+    assert "Kyste hépatique" not in valeurs_rejetees
+    assert "OGAST 1 gél/j" not in valeurs_rejetees
+    assert "Tabagisme actif" not in valeurs_rejetees
+
+
+def test_journal_rejet_validateur_et_extracteur(monkeypatch):
+    """Rejets du VALIDATEUR (règle nommée) et de l'EXTRACTEUR (score) :
+    la même observabilité partout dans la chaîne."""
+    from src.extraction_nlp import drbert_extractor as dtx
+    from src.extraction_nlp.drbert_extractor import Entite
+    from src.extraction_nlp.entity_extractor import _drbert_vers_entities
+
+    texte = (
+        "Laboratoire de biologie.\n"
+        "Traitement par antibiotique.\n"
+        "Gastrite aiguë récente.\n"
+        "Œsophagite chronique stable."
+    )
+
+    def _ent(label: str, mot: str, score: float) -> Entite:
+        debut = texte.index(mot)
+        return Entite(label, mot, debut, debut + len(mot), score)
+
+    entites = [
+        _ent("problem", "Laboratoire", 0.95),          # validateur_blocklist
+        _ent("treatment", "antibiotique", 0.95),       # validateur_classe_seule
+        _ent("problem", "Gastrite aiguë", 0.4),        # extracteur_score
+        _ent("problem", "Œsophagite chronique", 0.9),  # saine : passe tout
+    ]
+
+    class _FakeMoteur:
+        def annoter(self, t: str) -> list[Entite]:
+            return list(entites)
+
+    monkeypatch.setattr(dtx, "_MOTEUR", _FakeMoteur())
+    report: dict = {}
+    entites_finales = _drbert_vers_entities(texte, pages=None, report=report)
+    rejets = report["rejets"]
+    regles = {r["regle"] for r in rejets}
+    assert "validateur_blocklist" in regles
+    assert "validateur_classe_seule" in regles
+    assert "extracteur_score" in regles
+    # L'entité saine passe et n'est pas journalisée.
+    assert [e.valeur for e in entites_finales] == ["Œsophagite chronique"]
+
+
+# ---------------------------------------------------------------------------
+# Normalisateur : seuil CIM-10 relevé à 78 (audit 2026-08-24)
+# ---------------------------------------------------------------------------
+
+
+def test_seuil_cim10_78_chasse_les_collisions():
+    """« maladie coronaire » (0,73 → N18 rénal !) et « maladie de Basedow »
+    (0,74 → G20 Parkinson) ne reçoivent PLUS de code : la frontière mesurée
+    est franche (faux ≤ 0,74, corrects ≥ 0,80), le seuil 78 ne garde que
+    ce qui est au-dessus de la zone grise."""
+    from src.extraction_nlp.normalizer import normalize_diagnosis
+
+    assert normalize_diagnosis("maladie coronaire")["code_cim10"] is None
+    assert normalize_diagnosis("maladie de Basedow")["code_cim10"] is None
+    # Les codes corrects à ≥ 0,80 survivent au nouveau seuil.
+    assert normalize_diagnosis("fibrillation auriculaire")["code_cim10"] == "I48"
+    assert normalize_diagnosis("diabète de type 2")["code_cim10"] == "E11"
+
+
+def test_code_flou_marque_a_verifier():
+    """Un code issu d'un appariement flou < 0,85 est marqué « à vérifier »
+    dans le VSM : le médecin voit l'incertitude, jamais un fait établi."""
+    from src.extraction_nlp.normalizer import normalize_diagnosis
+
+    # « fibrillation auriculaire » matche I48 en flou à 0,80 → à vérifier.
+    n = normalize_diagnosis("fibrillation auriculaire")
+    assert n["code_cim10"] == "I48"
+    assert 0.78 <= n["confidence"] < 0.85
+    # Le marquage pipeline (SEUIL_CODE_A_VERIFIER = 0,85) :
+    from src.extraction_nlp.pipeline import SEUIL_CODE_A_VERIFIER
+
+    assert SEUIL_CODE_A_VERIFIER == 0.85
+    assert bool(n["confidence"] < SEUIL_CODE_A_VERIFIER) is True
+    # Un match exact (1,0) n'est jamais marqué.
+    exact = normalize_diagnosis("asthme")
+    assert exact["confidence"] == 1.0

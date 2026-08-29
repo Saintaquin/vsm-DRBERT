@@ -257,6 +257,11 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
                           {item.code_normalise && (
                             <span className="font-mono">
                               {item.code_normalise.systeme} {item.code_normalise.code} · {item.code_normalise.libelle}
+                              {item.code_normalise.a_verifier && (
+                                <span className="font-sans font-medium text-ambre">
+                                  {" "}· code à vérifier (appariement flou)
+                                </span>
+                              )}
                             </span>
                           )}
                           {item.occurrences != null && item.occurrences > 1 && (

@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 
 from .entity_extractor import NLP_ENGINE_RULES, extract_entities_with_report
-from .filtres_vsm import normaliser
+from .filtres_vsm import finaliser_rejets, normaliser, tracer_rejet
 from .normalizer import normalize_diagnosis, normalize_medication
 
 _log = logging.getLogger("vsm")
@@ -24,6 +24,12 @@ SECTIONS = (
     "points_vigilance",
 )
 _DIAG_SECTIONS = {"pathologies_actives", "antecedents"}
+
+# Audit du normalisateur (2026-08-24, outputs/AUDIT_NORMALISATEUR.md) : un
+# code issu d'un appariement FLOU sous 0,85 est marqué « à vérifier » dans
+# l'éditeur — le médecin voit l'incertitude au lieu d'un fait établi. Les
+# matches exacts (confiance 1,0) ne sont jamais marqués.
+SEUIL_CODE_A_VERIFIER = 0.85
 
 # Tokens de pseudonymisation produits par ingestion_ocr (mode « pseudo ») :
 # [PATIENT_001], [DATE_NAISSANCE_001], [NIR_001], [RPPS_001], …
@@ -129,6 +135,11 @@ def run_pipeline(
                     "code": n["code_cim10"],
                     "libelle_officiel": n["label_official"],
                     "confiance_normalisation": n["confidence"],
+                    # Audit 2026-08-24 : un code issu d'un appariement FLOU
+                    # sous 0,85 est marqué « à vérifier » — il est affiché au
+                    # médecin comme incertain, jamais comme un fait établi
+                    # (« maladie coronaire [CIM-10 N18] »).
+                    "a_verifier": bool(n["confidence"] < SEUIL_CODE_A_VERIFIER),
                 }
         elif ent.section == "traitements_long_cours":
             n = normalize_medication(ent.valeur)
@@ -138,6 +149,7 @@ def run_pipeline(
                     "code": n["code_atc"],
                     "libelle_officiel": n["label_official"],
                     "confiance_normalisation": n["confidence"],
+                    "a_verifier": bool(n["confidence"] < SEUIL_CODE_A_VERIFIER),
                 }
         champ["a_valider"] = champ["confiance"] < confidence_threshold
         sections[ent.section].append(champ)
@@ -145,7 +157,9 @@ def run_pipeline(
     # P6 — en-tête de cabinet : une forme qui apparaît à l'identique dans la
     # zone d'en-tête de PLUS de 3 pages est du papier à lettres (« Maladies
     # du Foie », l'adresse du cabinet…), pas un diagnostic. Un vrai
-    # diagnostic répété est dispersé dans le corps du texte.
+    # diagnostic répété est dispersé dans le corps du texte. Chaque entrée
+    # supprimée est journalisée avec son nombre de pages (rejet auditable).
+    journal_rejets = nlp_report.setdefault("rejets", [])
     if carte:
         formes = [
             c["valeur"] for items in sections.values() for c in items
@@ -154,24 +168,42 @@ def run_pipeline(
         if rejetees:
             supprimees = 0
             for cle, items in sections.items():
-                sections[cle] = [
-                    c for c in items if normaliser(c["valeur"]) not in rejetees
-                ]
-                supprimees += len(items) - len(sections[cle])
+                gardees = []
+                for c in items:
+                    forme = normaliser(c["valeur"])
+                    if forme in rejetees:
+                        supprimees += 1
+                        tracer_rejet(
+                            journal_rejets,
+                            c["valeur"],
+                            float(c.get("confiance", 0.0)),
+                            "P6_entete_repété",
+                            f"forme présente dans l'en-tête de "
+                            f"{rejetees[forme]} pages (papier à lettres)",
+                            page=(c.get("source") or {}).get("page"),
+                        )
+                    else:
+                        gardees.append(c)
+                sections[cle] = gardees
             _log.info(
                 "P6 en-tête répété : %d entrée(s) supprimée(s) (%s)",
                 supprimees,
                 ", ".join(sorted(rejetees))[:120],
             )
 
-    # P2 — déduplication sémantique PAR RUBRIQUE (code normalisé → forme →
-    # similarité ≥ 88) : un dossier de 20 ans décrit la même pathologie à
-    # chaque compte rendu, avec les fautes d'OCR propres à chaque page. Le
-    # représentant est la forme la plus fréquente ; chaque entrée fusionnée
-    # porte ses occurrences et ses pages (« 15 mentions, pages 8 à 62 »).
+    # P2 — déduplication sémantique PAR RUBRIQUE (forme → similarité ≥ 88 ;
+    # la fusion par code CIM-10/ATC est désactivée, voir filtres_vsm) : un
+    # dossier de 20 ans décrit la même pathologie à chaque compte rendu, avec
+    # les fautes d'OCR propres à chaque page. Le représentant est la forme la
+    # plus fréquente ; chaque entrée fusionnée porte ses occurrences et ses
+    # pages (« 15 mentions, pages 8 à 62 »).
     for cle, items in sections.items():
         if isinstance(items, list) and items:
             sections[cle] = dedupliquer(items)
+
+    # Journal des rejets : résolution des pages (offset → page) puis UNE
+    # ligne de journal par rejet — plus jamais d'entité disparue sans trace.
+    finaliser_rejets(journal_rejets, carte)
 
     result = {
         "schema_version": SCHEMA_VERSION,

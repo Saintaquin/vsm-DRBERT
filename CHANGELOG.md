@@ -2,6 +2,51 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.2] — 2026-08-24
+
+### Journal des rejets + audit appliqué (seuil CIM-10 78, codes flous « à vérifier »)
+
+Constat déclencheur : « maladie rénale chronique » et « MRC » absents du VSM
+ABRICOT sans AUCUNE trace du responsable — à chaque fois, le problème n'était
+pas le code mais l'absence d'observabilité.
+
+- **Journal des rejets** (`filtres_vsm.tracer_rejet` / `finaliser_rejets`) :
+  chaque entité écartée par UN filtre est tracée dans
+  `provenance.nlp.rejets` ET dans le journal applicatif, au format fixe
+  greppable —
+  `rejet | page=3 | «maladie rénale chronique» | score=0.90 | regle=P1_page_non_prescriptive | detail=page 3 : reference`.
+  Couvre TOUTE la chaîne : filtres de l'extracteur DrBERT (score, bords de
+  mots, label test, anonymisation), P1 (page non prescriptive), validateur
+  (chaque règle nommée : validateur_ancrage, _longueur, _blocklist,
+  _classe_seule…), P4 (terme générique), P6 (en-tête répété). Les valeurs
+  journalisées proviennent du texte anonymisé : aucune PII.
+- **Mystère ABRICOT résolu** (`tools/repro_abricot.py`, reproduction hors
+  ligne sur les 82 pages OCR) : « maladie rénale chronique » et « MRC »
+  n'apparaissent que page 3 — un compte rendu de laboratoire (DFG/MDRD) dont
+  le tableau de classification CKD imprime l'intitulé ; DrBERT les détecte
+  bien (0,90 / 0,80), c'est P1 qui écarte la page (« reference ») — rejet
+  CORRECT : c'est du matériel de référence, pas un diagnostic du patient.
+- **Seuil flou CIM-10 relevé de 72 à 78** (`normalizer.SEUIL_CIM10`,
+  recommandation d'audit appliquée) : frontière franche mesurée (faux
+  ≤ 0,74 / corrects ≥ 0,80) — « maladie coronaire » et « maladie de
+  Basedow » ne reçoivent plus de code. L'absence vaut mieux qu'un code faux.
+- **Codes flous marqués « à vérifier »**
+  (`pipeline.SEUIL_CODE_A_VERIFIER = 0,85`) : tout code CIM-10/ATC issu d'un
+  appariement flou sous 0,85 porte `a_verifier` dans le VSM et s'affiche
+  « code à vérifier (appariement flou) » dans l'éditeur. Audit régénéré :
+  **0 code CIM-10 faux** (2 faux ATC restants = spécificité trompeuse,
+  chantier séparé déclaré).
+- **P6 sur-rejet documenté (NON corrigé, décision en attente)** : le journal
+  révèle que P6 supprime de VRAIES pathologies — « ulcère bulbaire »
+  (0,96, pages 8/62/73…) tué parce que la zone « jusqu'au premier titre
+  ≤ 1200 » avale les antécédents restatés de chaque lettre hospitalière.
+  Mesures : le vrai papier à lettres (« Maladies du Foie ») est à offset
+  ≤ 168, les antécédents cliniques à ≥ 231 — un plafond de zone ~200 car.
+  séparerait les deux ; la zone stricte 500 ne suffit PAS (« ulcère » reste
+  dans les 500 premiers caractères de 12 pages).
+- Tests : 249 verts (+6 : format de ligne, rejets par règle sur toute la
+  chaîne, seuil 78, marquage à vérifier).
+
 ## [1.2.1] — 2026-08-24
 
 ### Fusion par code désactivée + audit du normalisateur (CIM-10/ATC)

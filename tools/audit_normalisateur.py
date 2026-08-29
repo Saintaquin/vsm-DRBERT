@@ -6,9 +6,10 @@ affiché dans un VSM est un problème même sans déduplication. »
 Méthode : un échantillon d'entités réalistes (issues de l'analyse des
 dossiers ABRICOT/BANANE et des cas synthétiques) est passé au normalisateur
 (``src/extraction_nlp/normalizer.py`` : match exact puis flou rapidfuzz sur
-les référentiels locaux, seuils 72/70-78). Chaque code attribué est comparé
-au code attendu — établi manuellement, vérifiable par un médecin du jury.
-Trois verdicts :
+les référentiels locaux, seuils 78/70-78 — le seuil CIM-10 a été relevé de
+72 à 78 après la première passe d'audit, voir « Décisions prises »). Chaque
+code attribué est comparé au code attendu — établi manuellement, vérifiable
+par un médecin du jury. Trois verdicts :
 
 - CORRECT  : code attribué = code attendu (ou classe mère, p. ex. A10AE04
              accepté si A10AE attendu) ;
@@ -247,13 +248,14 @@ def main() -> int:
             "   majorité des entités réelles d'un dossier de 20 ans (ulcère",
             "   bulbaire, sténose urétrale, hernie…) n'a simplement pas",
             "   d'entrée — l'absence est fréquente mais bénigne.",
-            "2. **Seuil flou trop bas (72) + libellés partageant des mots",
-            "   vides** : « maladie coronaire » {maladie, coronaire} et",
-            "   « maladie rénale chronique » {maladie, rénale, chronique}",
+            "2. **Seuil flou trop bas (72, historique) + libellés partageant",
+            "   des mots vides** : « maladie coronaire » {maladie, coronaire}",
+            "   et « maladie rénale chronique » {maladie, rénale, chronique}",
             "   partagent « maladie » → token_set_ratio 0,732 ≥ 72 → N18.",
             "   Idem « maladie de Basedow » → G20 (Parkinson) à 0,737.",
             "   Mesuré : tous les codes CORRECTS de l'échantillon sont à",
-            "   confiance ≥ 0,80 ; tous les FAUX sont ≤ 0,74.",
+            "   confiance ≥ 0,80 ; tous les FAUX sont ≤ 0,74 — CORRIGÉ par",
+            "   le seuil 78 (voir « Décisions prises »).",
             "3. **Spécificité trompeuse côté ATC** : « insuline » →",
             "   A10AE04 « insuline glargine » (confiance 1,00) et",
             "   « vitamine D » → A12AX « calcium + vitamine D » (1,00) : le",
@@ -266,24 +268,29 @@ def main() -> int:
             "  (`filtres_vsm.dedupliquer`) : un code faux ne peut plus",
             "  provoquer de fusion (« maladie coronaire » et « maladie rénale",
             "  chronique » ne fusionneront jamais, test de non-régression).",
-            "- Les codes restent AFFICHÉS dans le VSM (champ code_normalise)",
-            "  avec leur confiance de normalisation : c'est le sujet ouvert.",
+            "- **Seuil flou CIM-10 relevé de 72 à 78**",
+            "  (`normalizer.SEUIL_CIM10`) : frontière franche mesurée — tous",
+            "  les codes faux de l'échantillon sont à confiance ≤ 0,74, tous",
+            "  les codes corrects à ≥ 0,80. « maladie coronaire » et",
+            "  « maladie de Basedow » ne reçoivent PLUS de code (verdict",
+            "  ABSENCE ci-dessus) ; l'absence vaut mieux qu'un code faux.",
+            "- **Codes flous marqués « à vérifier »**",
+            "  (`pipeline.SEUIL_CODE_A_VERIFIER = 0,85`) : tout code issu",
+            "  d'un appariement flou sous 0,85 porte `a_verifier` dans le",
+            "  VSM et s'affiche « code à vérifier (appariement flou) » dans",
+            "  l'éditeur — le médecin voit l'incertitude, jamais un fait",
+            "  établi.",
             "",
-            "## Recommandations (à valider — pas implémentées)",
+            "## Recommandations restantes (chantier séparé, à planifier)",
             "",
-            "1. **Relever le seuil flou CIM-10 de 72 à 78-80** : sur cet",
-            "   échantillon, ça élimine les deux faux diagnostics (0,732 et",
-            "   0,737) sans perdre un seul code correct (tous ≥ 0,80).",
-            "2. **Enrichir les référentiels** (quelques centaines d'entrées",
+            "1. **Enrichir les référentiels** (quelques centaines d'entrées",
             "   couvrant la médecine générale de ville) : l'absence de code",
             "   est aujourd'hui le défaut dominant.",
-            "3. **Règle de spécificité ATC** : refuser un match dont le",
+            "2. **Règle de spécificité ATC** : refuser un match dont le",
             "   libellé référentiel contient un « + » (produit combiné) ou",
             "   un nom de spécialité (glargine) quand la demande est",
-            "   générique (« insuline », « vitamine D »).",
-            "4. **Afficher la confiance de normalisation dans l'éditeur** :",
-            "   un code fuzzy < 0,85 pourrait être marqué « à vérifier »",
-            "   comme les entités NLP (champ a_valider existant).",
+            "   générique (« insuline », « vitamine D ») — les 2 faux ATC",
+            "   restants viennent de là, pas du seuil.",
         ]
     )
 
