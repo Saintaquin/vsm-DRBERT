@@ -8,7 +8,8 @@ modules d'extraction) :
 - P1 : pages de laboratoire (antibiogramme) et fiches de référence écartées
   AVANT l'affectation aux rubriques — 40 antibiotiques d'un antibiogramme
   présentés comme « traitements au long cours » sont un risque clinique ;
-- P2 : déduplication sémantique (code normalisé → forme → similarité) — un
+- P2 : déduplication sémantique (forme → similarité ; la fusion par code
+  CIM-10/ATC est désactivée en attendant l'audit du normalisateur) — un
   dossier de 20 ans décrit la même pathologie à chaque compte rendu avec les
   fautes d'OCR propres à chaque page ;
 - P3 : actes chirurgicaux (CASM2 les étiquette « treatment ») → antécédents ;
@@ -365,13 +366,14 @@ def etendre_posologie(texte: str, fin: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# P2 — Déduplication sémantique (code → forme → similarité)
+# P2 — Déduplication sémantique (forme → similarité)
 # ---------------------------------------------------------------------------
 
 # Similarité : rapidfuzz token_set_ratio ≥ 88 absorbe les fautes d'OCR
 # (« ulcère libéaire » → « ulcère bulbaire linéaire »). Ne fusionner qu'à
 # l'intérieur d'une même rubrique (fait par l'appelant : un appel par
-# section).
+# section). La fusion par CODE normalisé est désactivée : voir la
+# docstring de dedupliquer (audit du normalisateur, 2026-08-24).
 SEUIL_SIMILARITE = 88
 
 # Latéralité : cliniquement distinct malgré la ressemblance lexicale —
@@ -404,18 +406,27 @@ def _fusionnables(a: str, b: str) -> bool:
 
 
 def dedupliquer(champs: list[dict]) -> list[dict]:
-    """Fusionne les entités d'une MÊME rubrique (P2) — 3 passes.
+    """Fusionne les entités d'une MÊME rubrique (P2) — 2 passes TEXTE.
 
-    Passe 1 : même code normalisé (CIM-10 / ATC) — sans risque, attrape les
-    synonymes que la similarité lexicale ne voit pas (« fuites urinaires » /
-    « incontinence urinaire d'effort », 80 de ratio mais même famille).
-    Passe 2 : même forme normalisée (accents/casse/espaces).
-    Passe 3 : similarité ≥ 88 (fautes d'OCR), latéralité différente bloquée.
+    Passe 1 : même forme normalisée (accents/casse/espaces).
+    Passe 2 : similarité ≥ 88 (fautes d'OCR), latéralité différente bloquée.
 
-    La passe 3 compare la nouvelle entité aux formes de TOUS les clusters et
-    RELIE les clusters ponts : dans la famille ulcère réelle, « ulcère
-    libéaire » (71.8 avec « bulbaire linéaire ») fusionne via « ulcère
-    linéaire » (93.3) — la chaîne complète s'effondre en une entrée.
+    La passe par CODE normalisé (CIM-10/ATC) est DÉSACTIVÉE : l'audit du
+    normalisateur (``outputs/AUDIT_NORMALISATEUR.md``, 2026-08-24) mesure
+    ~14 % de codes faux sur un échantillon — « maladie coronaire » se voit
+    attribuer N18 « maladie rénale chronique » (confiance 0,732) : fusionner
+    sur le code aurait fusionné les DEUX maladies dans le VSM. Les deux
+    passes conservées comparent le TEXTE RÉEL — elles sont sûres. La fusion
+    par code ne reviendra qu'après correction du normalisateur (seuil,
+    référentiel) et validation de l'audit.
+
+    La passe similarité compare la nouvelle entité aux formes de TOUS les
+    clusters et RELIE les clusters ponts : dans la famille ulcère réelle,
+    « ulcère libéaire » (71.8 avec « bulbaire linéaire ») fusionne via
+    « ulcère linéaire » (93.3) — la chaîne complète s'effondre en une
+    entrée. Les synonymes purs (« fuites urinaires » / « incontinence »,
+    similarité 80) ne fusionnent donc PLUS : c'est le prix de la sûreté,
+    assumé.
 
     Le représentant conservé est la forme la plus FRÉQUENTE (à départager
     par le score le plus élevé) — jamais la plus longue, souvent la plus
@@ -438,27 +449,9 @@ def dedupliquer(champs: list[dict]) -> list[dict]:
         if not forme:
             clusters.append({"formes": {"": [champ]}, "membres": [champ]})
             continue
-        code = (champ.get("code_normalise") or {}).get("code")
-        # Passe 1 : code normalisé identique. La latéralité bloque quand
-        # même : « kyste de l'ovaire droit » et « gauche » partagent un code
-        # CIM-10 mais pas une clinique.
-        cibles: list[dict] = []
-        if code:
-            for c in clusters:
-                codes = {
-                    (m.get("code_normalise") or {}).get("code")
-                    for m in c["membres"]
-                }
-                if code in codes and not any(
-                    _lateralement_distinct(forme, f)
-                    for f in c["formes"]
-                    if f
-                ):
-                    cibles.append(c)
-        # Passe 2 : forme normalisée identique.
-        if not cibles:
-            cibles = [c for c in clusters if forme in c["formes"]]
-        # Passe 3 : similarité (toutes les formes du cluster : les chaînes
+        # Passe 1 : forme normalisée identique.
+        cibles: list[dict] = [c for c in clusters if forme in c["formes"]]
+        # Passe 2 : similarité (toutes les formes du cluster : les chaînes
         # de fautes d'OCR s'absorbent progressivement).
         if not cibles:
             cibles = [

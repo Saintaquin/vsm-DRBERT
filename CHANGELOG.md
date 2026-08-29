@@ -2,6 +2,37 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.1] — 2026-08-24
+
+### Fusion par code désactivée + audit du normalisateur (CIM-10/ATC)
+
+Constat sur les VSM réels : « maladie rénale chronique » et « maladie
+coronaire » fusionnaient — le normalisateur attribue N18 aux DEUX (confiance
+0,73). Un code faux ne doit jamais décider d'une fusion.
+
+- **Fusion par code CIM-10/ATC DÉSACTIVÉE** dans `filtres_vsm.dedupliquer`
+  (P2) : seules les passes TEXTE fusionnent (forme normalisée, similarité
+  ≥ 88) — elles comparent le texte réel. Prix assumé : les synonymes purs
+  (« HTA » / « hypertension artérielle ») ne fusionnent plus tant que le
+  normalisateur n'est pas corrigé.
+- **Test de non-régression** : « maladie rénale chronique » et « maladie
+  coronaire » ne fusionnent JAMAIS, même si le normalisateur leur attribue
+  le même code.
+- **Audit du normalisateur** (`tools/audit_normalisateur.py`, régénérable →
+  `outputs/AUDIT_NORMALISATEUR.md`) : échantillon de 48 entités réalistes
+  (dossiers réels + cas synthétiques), verdicts manuels vérifiables.
+  **Réponse : 86 % de codes corrects parmi les attribués (24/28), 4 faux** :
+  « maladie coronaire » → N18 (rénal !) et « maladie de Basedow » → G20
+  (Parkinson) par seuil flou trop bas (72 — tous les faux ≤ 0,74, tous les
+  corrects ≥ 0,80) ; « insuline » → glargine et « vitamine D » → calcium +
+  vitamine D par spécificité trompeuse. Cause racine dominante : référentiel
+  trop petit (35 CIM-10, 38 ATC) — 22/48 entités sans code (absence bénigne).
+  Recommandations (NON implémentées, à valider) : relever le seuil à 78-80,
+  enrichir les référentiels, règle de spécificité ATC, afficher la confiance
+  de normalisation < 0,85 comme « à vérifier ».
+- Tests : 243 verts (+3 : fusion par code désactivée, non-régression
+  rénale/coronaire, garde-fou latéralité).
+
 ## [1.2.0] — 2026-08-24
 
 ### Filtres VSM — analyse de deux dossiers réels (correctifs P1-P7)

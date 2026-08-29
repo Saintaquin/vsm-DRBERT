@@ -154,16 +154,39 @@ def test_p2_fusion_par_forme_et_occurrences():
     assert fusion[0]["pages"] == [8, 12, 62]
 
 
-def test_p2_fusion_par_code_normalise():
-    """Deux libellés différents, même code CIM-10 → fusion (sans risque)."""
+def test_p2_fusion_par_code_desactivee():
+    """La fusion par code normalisé est DÉSACTIVÉE : deux libellés
+    lexicalement éloignés avec le MÊME code CIM-10 restent deux entrées.
+    L'audit du normalisateur (outputs/AUDIT_NORMALISATEUR.md) mesure ~14 %
+    de codes faux — fusionner sur le code, c'est hériter de ses erreurs.
+    Prix assumé : les synonymes purs (« HTA » / « hypertension
+    artérielle », ratio ~15) ne fusionnent PLUS tant que le normalisateur
+    n'est pas corrigé. Seules les passes TEXTE (forme, similarité)
+    fusionnent : elles comparent le texte réel."""
     champs = [
-        _champ("Diabète de type 2", code="E11", page=3),
-        _champ("Diabete type II", code="E11", page=40),
+        _champ("hypertension artérielle", code="I10", page=3),
+        _champ("HTA", code="I10", page=40),
     ]
     fusion = dedupliquer(champs)
-    assert len(fusion) == 1
-    assert fusion[0]["code_normalise"]["code"] == "E11"
-    assert fusion[0]["occurrences"] == 2
+    assert len(fusion) == 2  # même code, textes éloignés : PAS de fusion
+
+
+def test_p2_non_regression_renale_vs_coronaire():
+    """NON-RÉGRESSION (constat réel, dossier ABRICOT/BANANE) : « maladie
+    rénale chronique » et « maladie coronaire » ne doivent JAMAIS fusionner.
+    Le normalisateur attribue N18 (maladie rénale chronique) aux DEUX avec
+    une confiance de 0,732 — l'ancienne fusion par code fusionnait donc les
+    deux maladies en une seule entrée du VSM. Les formes lexicales ne se
+    ressemblent pas (ratio ~73) : avec les passes texte, jamais de fusion,
+    même si le code collide."""
+    champs = [
+        _champ("maladie rénale chronique", code="N18", page=5),
+        _champ("maladie coronaire", code="N18", page=20),
+    ]
+    fusion = dedupliquer(champs)
+    assert len(fusion) == 2
+    valeurs = sorted(c["valeur"] for c in fusion)
+    assert valeurs == ["maladie coronaire", "maladie rénale chronique"]
 
 
 def test_p2_fusion_par_similarite_chaine_ocr():
@@ -208,13 +231,22 @@ def test_p2_familles_distinctes_non_fusionnees():
 
 def test_p2_lateralite_differentes_jamais_fusionnees():
     """« kyste de l'ovaire droit » ≠ « kyste de l'ovaire gauche » : clinique-
-    ment distinct malgré la ressemblance lexicale — même quand un code CIM-10
-    identique les rapprocherait, la latéralité bloque."""
+    ment distinct. Deux raisons INDEPENDANTES de ne jamais fusionner, toutes
+    deux testées : la similarité (80 < 88) ET le garde-fou latéralité —
+    qui protégerait même si le seuil était abaissé (droite/gauche/bilatéral
+    sont lexicalement éloignés, mais l'invariant doit être explicite)."""
+    from src.extraction_nlp.filtres_vsm import _fusionnables
+
     champs = [
-        _champ("kyste de l'ovaire droit", code="N83.2", page=5),
-        _champ("kyste de l'ovaire gauche", code="N83.2", page=30),
+        _champ("kyste de l'ovaire droit", page=5),
+        _champ("kyste de l'ovaire gauche", page=30),
     ]
     assert len(dedupliquer(champs)) == 2
+    # Le garde-fou lui-même (indépendamment du seuil) :
+    assert not _fusionnables(
+        "retention urinaire droite", "retention urinaire gauche"
+    )
+    assert not _fusionnables("hernie bilaterale", "hernie droite")
 
 
 def test_p2_représentant_le_score_tranche_pas_la_longueur():
