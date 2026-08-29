@@ -268,7 +268,19 @@ _DEPS: tuple[bool, str] | None = None
 
 
 def _dependances() -> tuple[bool, str]:
-    """torch + transformers importables DANS CET INTERPRÉTEUR ?
+    """Dépendances d'inférence importables DANS CET INTERPRÉTEUR ?
+
+    Importe AUSSI les classes réellement utilisées et la chaîne
+    ``torch._dynamo`` (importée PARESSEUSEMENT par transformers au premier
+    ``from_pretrained``). Sans ce pré-chauffage, cette chaîne s'importe pour
+    la première fois dans le FIL DU WORKER au milieu du traitement : si un
+    autre fil importe torch simultanément, ``torch._dynamo.utils`` peut être
+    vu PARTIELLEMENT initialisé (import circulaire utils↔config) — son
+    ``except ImportError: pass`` avale alors l'erreur et laisse
+    ``NP_SUPPORTED_MODULES`` indéfini, d'où un tardif « cannot import name
+    NP_SUPPORTED_MODULES » au chargement du modèle. Pré-chauffé ici,
+    mono-thread au démarrage, tous les imports ultérieurs du worker sont des
+    no-ops dans ``sys.modules`` : la défaillance disparaît par construction.
 
     Résultat mis en cache : l'import de torch coûte plusieurs secondes
     quand il réussit (et échoue instantanément quand il manque). C'est le
@@ -278,8 +290,13 @@ def _dependances() -> tuple[bool, str]:
     global _DEPS
     if _DEPS is None:
         try:
-            import torch  # noqa: F401
+            import torch
+            import torch._dynamo.eval_frame  # noqa: F401
             import transformers  # noqa: F401
+            from transformers import (  # noqa: F401
+                AutoModelForTokenClassification,
+                AutoTokenizer,
+            )
         except ImportError as exc:
             raison = (
                 f"dépendance absente de CET interpréteur ({exc}) — "
@@ -429,6 +446,10 @@ def _charger() -> _MoteurDrBERT:
     except DrBERTIndisponible:
         raise
     except Exception as exc:  # dossier présent mais illisible → repli, pas crash
+        # Pile complète dans le journal : un simple str(exc) a déjà masqué
+        # la vraie cause d'un échec d'import torch/transformers (ex. course
+        # d'initialisation torch._dynamo). Sans PII : chemins de code seuls.
+        _log.exception("chargement DrBERT échoué — repli règles (%s)", exc)
         raise DrBERTIndisponible(f"modèle DrBERT illisible ({exc})") from exc
 
 

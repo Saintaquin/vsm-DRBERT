@@ -850,17 +850,23 @@ def main():
     setup_logging(APP_DIR)
     _log.info("VSM-OCR démarré sur 127.0.0.1:8741 (100%% local)")
 
-    # DIAGNOSTIC AU DÉMARRAGE : si DrBERT (moteur par défaut) ne peut PAS
-    # tourner dans cet interpréteur, il faut le savoir MAINTENANT — pas après
-    # 3 minutes d'OCR au moment du repli règles. Cas typique sous Windows :
-    # « python » pointe vers un interpréteur sans torch (ex. 3.14) alors que
-    # l'environnement ML documenté est py -3.12. Le message donne
-    # l'interpréteur fautif ET la commande correcte.
-    if moteur_nlp_par_defaut() == "drbert":
+    # DIAGNOSTIC + PRÉ-CHAUFFAGE AU DÉMARRAGE : les dépendances de DrBERT
+    # (torch, transformers, chaîne torch._dynamo) sont importées ICI, sur le
+    # fil principal, AVANT que uvicorn ne serve. Sans cela, elles ne
+    # s'importent qu'au premier from_pretrained — dans le FIL DU WORKER, en
+    # plein traitement — où une initialisation concurrente de torch peut
+    # laisser torch._dynamo partiellement initialisé (« cannot import name
+    # NP_SUPPORTED_MODULES ») et faire replier DrBERT sur les règles.
+    # Pré-chauffées ici, tous les imports ultérieurs sont des no-ops.
+    # Et si DrBERT ne peut pas tourner dans cet interpréteur, il faut le
+    # savoir MAINTENANT, pas après des minutes d'OCR : cas typique sous
+    # Windows, « python » pointe vers un interpréteur sans torch (ex. 3.14)
+    # alors que l'environnement ML documenté est py -3.12.
+    if moteur_nlp_par_defaut() != "rules":
         from src.extraction_nlp.drbert_extractor import execution_possible
 
         _ok, _raison = execution_possible()
-        if not _ok:
+        if not _ok and moteur_nlp_par_defaut() == "drbert":
             _log.warning(
                 "DrBERT INUTILISABLE : %s | interpréteur = %s (Python %s) | "
                 "Le moteur de règles sera utilisé en repli. Relancer avec : "
@@ -877,8 +883,45 @@ def main():
 
     preload_llm()
 
-    # 127.0.0.1 STRICTEMENT — jamais 0.0.0.0 (cf. garde-fous projet)
+    # 127.0.0.1 STRICTEMENT — jamais 0.0.0.0 (cf. garde-fous projet).
+    # Garde-fou ANTI-DOUBLON : si une AUTRE instance VSM-OCR (souvent un
+    # ancien serveur oublié dans une autre console) tient déjà le port,
+    # uvicorn échouerait avec un obscure « Errno 10048 » et le navigateur
+    # continuerait de parler à l'ANCIEN serveur — l'utilisateur croirait
+    # relancer la version corrigée alors qu'il teste l'ancien code. On
+    # refuse ici AVANT uvicorn, avec le PID du squatteur et l'action à faire.
+    import socket
+
+    _sonde = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        _sonde.bind(("127.0.0.1", 8741))
+    except OSError:
+        _log.error(
+            "Le port 8741 est déjà occupé par une AUTRE instance VSM-OCR%s "
+            "— fermez-la (Ctrl+C dans sa console) puis relancez. Le présent "
+            "processus s'arrête SANS rien servir.",
+            _propriétaire_port(8741),
+        )
+        return
+    finally:
+        _sonde.close()
     uvicorn.run(app, host="127.0.0.1", port=8741, log_level="warning")
+
+
+def _propriétaire_port(port: int) -> str:
+    """PID + ligne de commande du processus qui écoute sur `port` (psutil)."""
+    try:
+        import psutil
+
+        for c in psutil.net_connections(kind="tcp"):
+            if c.laddr and c.laddr.port == port and c.status == psutil.CONN_LISTEN:
+                pid = c.pid
+                if pid:
+                    p = psutil.Process(pid)
+                    return f" (PID {pid} : {p.cmdline()})"
+    except Exception:  # noqa: BLE001 - détection best-effort, jamais bloquante
+        _log.debug("détection du propriétaire du port %d impossible", port)
+    return ""
 
 
 if __name__ == "__main__":
