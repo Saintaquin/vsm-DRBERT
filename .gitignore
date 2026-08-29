@@ -24,3 +24,5 @@ frontend/tsconfig.tsbuildinfo
 reglements/
 # Captures d'écran de diagnostic (bug) — locales uniquement.
 bug/
+# Lanceur local (contient la phrase du coffre-fort de CE poste) — jamais committé.
+lancer_vsm.bat
