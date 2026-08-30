@@ -2,6 +2,85 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.9] — 2026-08-30
+
+### Correctifs MANGUE v9 (M1-M5) : la métrique ne séparait plus, le mot
+### discriminant si
+
+Analyse du dossier MANGUE (médecine interne, 131 pages, chirurgie pariétale
+et hépatique, IRC) — six familles de défauts. Tout est mesuré avant d'être
+corrigé (aucun réglage à l'aveugle), vérifié par diff avant/après sur les
+QUATRE dossiers (MANGUE, DRAGON, ABRICOT, BANANE) et couvert par 23 tests
+nouveaux (289 au total, tous verts).
+
+- **M1 — critère de mot DISCRIMINANT (CIM-10)** : « insuffisance rénale »
+  recevait I50 « Insuffisance cardiaque » à 0,780 et « zygarthrose » M15
+  « Polyarthrose » à 0,783 — EXACTEMENT à la frontière du seuil 78. Le
+  score global est dominé par la tête commune du libellé : aucun réglage de
+  seuil ne sépare ces cas. Nouvelle règle `code_recevable`
+  (`normalizer.py`) : chaque mot discriminant du terme (hors têtes
+  génériques, latéralité, sévérité — « insuffisance cardiaque DROITE »
+  garde I50, non-régression explicite) doit avoir un correspondant
+  (fuzz.ratio ≥ 85) dans le libellé, sinon AUCUN code. Exceptions mesurées
+  : libellés de REGROUPEMENT (« Fibrillation ET flutter » → I48 garde une
+  fibrillation isolée) et générique-à-générique (« allergie » ↔ « Allergie,
+  sans précision »).
+- **M1 — bug AVC** : « AVC » seul recevait I63 à 1,00 — `_nomme_par_alias`
+  acceptait une simple INTERSECTION de jetons ; il exige désormais
+  l'INCLUSION (l'abréviation nue ne documente pas l'ischémie ; I64 absent
+  du référentiel → aucun code). « AVC ischémique » garde I63.
+- **M1 — régression C1 réparée (ATC)** : « Kardegic 75mg » était passé à
+  None (0,76 < 0,95 — la posologie accolée fait chuter token_set_ratio
+  face au libellé long). Les ALIAS parenthésés sont désormais des CLÉS du
+  référentiel : « Kardegic 75mg » → B01AC06 à 1,00. Audit normalisateur :
+  29/29 codes corrects, 0 faux.
+- **M2 — scission des entités concaténées** (sauts de ligne perdus à
+  l'OCR) : « HTA Gastrite chronique » était UNE entité DrBERT.
+  `scinder_concatenation` coupe sur majuscule interne après mot autonome
+  (minuscules ≥ 3 lettres, ou abréviation 2-5 capitales — le regex du
+  relecteur ne coupait pas son propre exemple « HTA »), avec offsets
+  recalculés (chaque fragment reste un extrait EXACT du document). Les
+  éponymes sont protégés par construction (« maladie de Crohn »,
+  « d'Achille » collent à l'apostrophe). GARDE : si aucun fragment ne
+  survit, l'entité originale reprend sa place — la scission ne perd jamais
+  une information.
+- **M3 — actes complémentaires** : interposition, exsufflation,
+  dissection, réparation, incision, voie d'abord, coelioscopie, pariétex
+  ajoutés à la liste d'actes (« Interposition prothétique » et « cure
+  d'éventration » quittent les traitements pour les antécédents) ;
+  « cure d » remplace « cure de » (l'apostrophe de « cure d'éventration »
+  est normalisée en espace). « gel de xylocaïne » et « anesthésique
+  local » routés en points de vigilance. NON-RÉGRESSION vérifiée : PPC
+  autopilotée, traitement ventilatoire, aide ventilatoire restent des
+  traitements.
+- **M4 — rangement** : une CLASSE médicamenteuse étiquetée « problem »
+  (glucocorticoïdes, tolérant aux fautes d'OCR) est routée en traitements ;
+  les dosages d'auto-anticorps (« anti-TRIM21 » : cible en
+  majuscule/chiffre) sont rejetés en rubrique diagnostique — mais PAS en
+  vaccinations (« triple vaccination anti COVID » tombait dans le piège,
+  mesuré) ; l'en-tête de service répété (« Pathologies du Sommeil ») est
+  rejeté par P6 (zone d'en-tête plafonnée à 200 caractères + STABILITÉ de
+  position ± 50 car. : un intitulé de service est toujours au même endroit,
+  un diagnostic cité en début de corps bouge) ; « Type 2 » orphelin de
+  « diabète de type 2 » est rejeté.
+- **M5 — fragments résiduels** : termes d'un seul mot hors LEXIQUE MÉDICAL
+  rejetés (« froid », « douloureux », « gaz », « échostructure »,
+  « incision ») — lexique calibré sur la mesure (~150 un-mot des trois
+  dossiers réels : abréviations + familles de suffixes + liste blanche
+  manuelle, mots du set P4 exclus pour garder la règle précise de P4) ;
+  fins tronquées étendues (en, intra, inter, supra, rétro, péri, « + » :
+  « hypersignal en », « dilatation des voies biliaires intra »,
+  « Lavage eau + ») ; verbe d'état conjugué au milieu rejeté (« foie est
+  augmenté de taille » = phrase de compte rendu, pas une entrée de liste).
+- **Limites connues** (mesurées, assumées) : les fragments multi-mots non
+  médicaux (« masse musculaire », « soucis nocturnes ») survivent — les
+  tuer demanderait un dictionnaire français complet ; la scission M2 peut
+  produire en traitements des fragments courts (« Moléculaire » après
+  « Héparine de Bas Poids ») — la règle un-mot ne s'applique pas aux
+  traitements pour ne pas tuer les noms commerciaux hors référentiel
+  (CLAMOXYL, MAALOX…) ; M6 (redondance rénale IRC/N18/insuffisance) est
+  un chantier lexique de synonymes, non traité ici.
+
 ## [1.2.8] — 2026-08-30
 
 ### Navigation : retour au VSM sans piège

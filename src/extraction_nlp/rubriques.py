@@ -81,6 +81,18 @@ _RX_ANTECEDENT = re.compile(
 # neuf dans les dossiers réels. Un facteur de risque est une exposition, le
 # vocabulaire en est très restreint.
 
+# M4/MANGUE v9 : une CLASSE médicamenteuse que le modèle étiquette
+# « problem » (DrBERT voyait « giucoconticoids » — glucocorticoïdes — comme
+# une pathologie) est un TRAITEMENT, pas un diagnostic. Liste fermée et
+# courte, tolérante aux fautes d'OCR (« conticoid » dans « giucoconticoids ») ;
+# l'allergie passe AVANT (une « allergie aux corticoïdes » reste une
+# allergie, donnée de sécurité du VSM).
+_RX_CLASSE_MEDICAMENT = re.compile(
+    r"cortico[ïi]d|contico[ïi]d|corticoth[ée]rap|cortisone|prednisone|"
+    r"prednisolone|m[ée]thylprednisolone",
+    re.IGNORECASE,
+)
+
 
 def rubrique_de(
     label: str, contexte: str = "", titre: str | None = None, entite: str = ""
@@ -128,6 +140,10 @@ def rubrique_de(
             return "allergies"
         if titre == "antecedents" or _RX_ANTECEDENT.search(bas):
             return "antecedents"
+        # M4/MANGUE : classe médicamenteuse étiquetée « problem » →
+        # traitement (l'allergie a déjà été traitée ci-dessus).
+        if entite and _RX_CLASSE_MEDICAMENT.search(entite):
+            return "traitements_long_cours"
         # P5 : liste fermée sur l'entité (exposition/comportement), ou titre
         # de rubrique explicite « FACTEURS DE RISQUE ». Tout le reste —
         # même suggéré par le contexte — est un diagnostic → pathologies.

@@ -98,9 +98,33 @@ _RX_DEBUT_TRONQUE = re.compile(
     r"|^(?:d|l)'",
     re.IGNORECASE,
 )
+# M5/MANGUE v9 : préfixes anatomiques ajoutés — « hypersignal en »,
+# « dilatation des voies biliaires intra » sont des débuts de phrases
+#radiologiques, pas des entrées de liste ; et « Lavage eau + » finit sur
+# un connecteur de protocole. La mesure sur ABRICOT/BANANE/DRAGON
+# (aucune valeur légitime ne finit ainsi) autorise l'extension.
 _RX_FIN_TRONQUEE = re.compile(
-    r"\s(?:de|du|des|d'|la|le|les|l'|et|ou|à|sans|avec|par|pour|sur|dans)$",
+    r"\s(?:de|du|des|d'|la|le|les|l'|et|ou|à|sans|avec|par|pour|sur|dans|"
+    r"en|intra|inter|supra|rétro|retro|péri|peri)\s*$"
+    r"|\s\+$",
     re.IGNORECASE,
+)
+
+# M4/MANGUE v9 : DOSAGE D'AUTO-ANTICORPS — « anti-TRIM21 » étiqueté
+# pathologie par le modèle est un résultat de laboratoire (recherche de
+# syndrome de Sjögren), pas un diagnostic : la majuscule ou le chiffre
+# après « anti- » signale la cible moléculaire. Les classes médicamenteuses
+# en minuscules (« anti-inflammatoires ») ne sont pas touchées ; les
+# anticorps thérapeutiques (rituximab, anti-CD20) passent par la branche
+# traitements, jamais par cette règle.
+_RX_DOSAGE_ANTICORPS = re.compile(r"anti[-\s]?[A-Z0-9]")
+
+# M5/MANGUE v9 : VERBE D'ÉTAT conjugué en position INTERNE — « foie est
+# augmenté de taille » est une phrase de compte rendu, pas une entrée de
+# liste. La mesure (aucune valeur légitime des 3 dossiers ne contient ces
+# formes en position interne) autorise le rejet.
+_RX_PHRASE_VERBE = re.compile(
+    r"\s(?:est|sont|était|etaient|a été|a ete|ont été|ont ete|sera|seront)\s"
 )
 
 _NEG_ALLERGY = re.compile(
@@ -847,6 +871,60 @@ def _valider_raison(
             "la valeur FINIT par un mot-outil (découpe tronquée)",
         )
 
+    # 5bis. M5/MANGUE v9 : PHRASE, pas une entrée de liste — « foie est
+    #    augmenté de taille » est du compte rendu narratif (verbe d'état
+    #    conjugué en position interne).
+    if _RX_PHRASE_VERBE.search(valeur):
+        return None, (
+            "validateur_phrase",
+            (
+                "verbe d'état conjugué au milieu : phrase de compte rendu, "
+                "pas une entrée de liste"
+            ),
+        )
+
+    # 5ter. M4/MANGUE v9 : dosage d'auto-anticorps (« anti-TRIM21 ») en
+    #    rubrique diagnostique = résultat de laboratoire, pas un diagnostic.
+    #    Les anticorps thérapeutiques ne passent pas ici (branche
+    #    traitements exclue) ; les VACCINATIONS sont exclues aussi — le
+    #    diff avant/après a montré que « triple vaccination anti COVID »
+    #    tombait dans le piège (mesure, pas intuition).
+    if rubrique in (
+        "pathologies_actives",
+        "antecedents",
+        "facteurs_risque",
+    ) and _RX_DOSAGE_ANTICORPS.search(valeur):
+        return None, (
+            "validateur_dosage_anticorps",
+            (
+                "dosage d'auto-anticorps (cible en majuscule/chiffre) : "
+                "laboratoire, pas un diagnostic"
+            ),
+        )
+
+    # 5quater. M4/M5/MANGUE v9 : fragment NON MÉDICAL — un terme d'un seul
+    #    mot hors lexique médical (« froid », « douloureux », « gaz »,
+    #    « échostructure ») ou une valeur trop courte sans aucun mot
+    #    médical (« Type 2 » orphelin de « diabète de type 2 »).
+    #    Diagnostics et facteurs de risque seulement : les noms de
+    #    médicaments hors référentiel ATC d'un seul mot (CLAMOXYL, MAALOX…)
+    #    doivent survivre en traitements, et les points de vigilance
+    #    accueillent des supports (NAXY, gel de xylocaïne).
+    from .filtres_vsm import est_fragment_non_medical
+
+    if rubrique in (
+        "pathologies_actives",
+        "antecedents",
+        "facteurs_risque",
+    ) and est_fragment_non_medical(valeur):
+        return None, (
+            "validateur_non_medical",
+            (
+                "terme isolé hors vocabulaire médical (bruit OCR ou fragment "
+                "orphelin de son mot porteur)"
+            ),
+        )
+
     # 6. Règles propres aux traitements.
     if rubrique == "traitements_long_cours":
         if bas in _CLASSES_SEULES:  # « antibiotique », « inhibiteur »
@@ -1391,6 +1469,20 @@ def _drbert_vers_entities(
             if journal_pages is not None:
                 journal_pages.extend(rejets)
 
+    # M2/MANGUE v9 — scission des entités qui agrègent deux items de liste
+    # (saut de ligne perdu à l'OCR : « HTA Gastrite chronique » est UNE
+    # entité DrBERT pour deux pathologies sans rapport). APRÈS P1 : les
+    # fragments restent sur des pages prescriptives ; AVANT l'affectation
+    # des rubriques : chaque fragment suit son propre chemin (un signe
+    # neurologique et un déficit moteur ne vont pas forcément au même
+    # endroit). La liste ``scissions`` alimente la garde aval : si AUCUN
+    # fragment d'une entité scindée ne survit, l'original reprend sa place
+    # — la scission ne doit jamais PERDRE une information.
+    scissions: list[tuple] = []
+    entites = _scinder_concatenations(entites, scissions)
+    if scissions and report is not None:
+        report["nb_scissions"] = len(scissions)
+
     brut: dict[str, list[dict]] = {}
     for ent, section in affecter_rubriques(entites, text):
         brut.setdefault(section, []).append(
@@ -1405,45 +1497,115 @@ def _drbert_vers_entities(
     # dedup_exact=False : P2 (aval, pipeline) fusionne les répétitions en
     # comptant les occurrences au lieu de les jeter en silence.
     valide = valider_sortie(brut, text, dedup_exact=False, journal=journal)
+
+    def _finaliser(section: str, it: dict) -> ExtractedEntity | None:
+        """P4 (trop générique) + P7 (posologie) → entité finale (ou None)."""
+        # P4 — terme trop générique isolé (« douleur », « kyste » sans
+        # qualificatif) : n'apporte ni où, ni quand, ni pourquoi.
+        if est_trop_generique(it["valeur"]):
+            tracer_rejet(
+                journal,
+                it["valeur"],
+                float(it.get("score", 0.0)),
+                "P4_terme_generique",
+                "terme trop générique isolé (sans qualificatif)",
+                offset_debut=it.get("offset_debut"),
+            )
+            return None
+        # P7 — posologie accolée au traitement : l'empan s'étend vers la
+        # droite tant que le texte est une posologie (≤ 60 caractères).
+        # Découpe du texte source : aucune invention possible.
+        if section == "traitements_long_cours":
+            fin = etendre_posologie(text, int(it.get("offset_fin", 0)))
+            if fin > int(it.get("offset_fin", 0)):
+                extrait = text[int(it.get("offset_debut", 0)) : fin].strip()
+                it = dict(it)
+                it["valeur"] = extrait
+                it["passage"] = extrait
+                it["offset_fin"] = fin
+        return ExtractedEntity(
+            valeur=it["valeur"],
+            section=section,
+            confiance=round(float(it.get("score", 0.0)), 3),
+            passage=it["passage"],
+            offset_debut=int(it.get("offset_debut", 0)),
+            offset_fin=int(it.get("offset_fin", 0)),
+            moteur_nlp=NLP_ENGINE_DRBERT_CASM2,
+            correction_ocr=False,  # la valeur EST le texte source
+            origine="drbert",
+        )
+
     sortie: list[ExtractedEntity] = []
     for section, items in valide.items():
         for it in items:
-            # P4 — terme trop générique isolé (« douleur », « kyste » sans
-            # qualificatif) : n'apporte ni où, ni quand, ni pourquoi.
-            if est_trop_generique(it["valeur"]):
-                tracer_rejet(
-                    journal,
-                    it["valeur"],
-                    float(it.get("score", 0.0)),
-                    "P4_terme_generique",
-                    "terme trop générique isolé (sans qualificatif)",
-                    offset_debut=it.get("offset_debut"),
-                )
+            entite = _finaliser(section, it)
+            if entite is not None:
+                sortie.append(entite)
+
+    # M2 — garde de non-perte : une scission dont AUCUN fragment n'a survécu
+    # (validateur ou P4) rend l'entité originale, qui repasse par le même
+    # chemin (rubrique d'origine, validateur, P4/P7) — le statu quo d'avant
+    # scission, jamais une perte d'information.
+    if scissions:
+        survivants = {e.offset_debut for e in sortie}
+        for original, fragments in scissions:
+            if any(frag.debut in survivants for frag in fragments):
                 continue
-            # P7 — posologie accolée au traitement : l'empan s'étend vers la
-            # droite tant que le texte est une posologie (≤ 60 caractères).
-            # Découpe du texte source : aucune invention possible.
-            if section == "traitements_long_cours":
-                fin = etendre_posologie(text, int(it.get("offset_fin", 0)))
-                if fin > int(it.get("offset_fin", 0)):
-                    extrait = text[int(it.get("offset_debut", 0)) : fin].strip()
-                    it = dict(it)
-                    it["valeur"] = extrait
-                    it["passage"] = extrait
-                    it["offset_fin"] = fin
-            sortie.append(
-                ExtractedEntity(
-                    valeur=it["valeur"],
-                    section=section,
-                    confiance=round(float(it.get("score", 0.0)), 3),
-                    passage=it["passage"],
-                    offset_debut=int(it.get("offset_debut", 0)),
-                    offset_fin=int(it.get("offset_fin", 0)),
-                    moteur_nlp=NLP_ENGINE_DRBERT_CASM2,
-                    correction_ocr=False,  # la valeur EST le texte source
-                    origine="drbert",
-                )
-            )
+            for ent, section in affecter_rubriques([original], text):
+                item = {
+                    "valeur": ent.texte,
+                    "passage": ent.texte,
+                    "offset_debut": ent.debut,
+                    "offset_fin": ent.fin,
+                    "score": ent.score,
+                }
+                ok, raison = _valider_raison(item, text, section)
+                if ok is None:
+                    if raison is not None:
+                        tracer_rejet(
+                            journal,
+                            ent.texte,
+                            ent.score,
+                            raison[0],
+                            raison[1],
+                            offset_debut=ent.debut,
+                        )
+                    continue
+                entite = _finaliser(section, ok)
+                if entite is not None:
+                    sortie.append(entite)
+    return sortie
+
+
+def _scinder_concatenations(
+    entites: list, scissions: list
+) -> list:
+    """M2 — scinde les entités concaténées (deux items, un saut de ligne perdu).
+
+    Retourne la liste d'entités où chaque entité concaténée est remplacée
+    par ses fragments ; ``scissions`` reçoit [(original, [fragments])] pour
+    la garde de non-perte aval (cf. _drbert_vers_entities).
+    """
+    from dataclasses import replace
+
+    from .filtres_vsm import scinder_concatenation
+
+    sortie = []
+    for e in entites:
+        morceaux = scinder_concatenation(e.texte, e.debut, e.fin)
+        if len(morceaux) <= 1:
+            sortie.append(e)
+            continue
+        fragments = [
+            replace(e, texte=t, debut=d, fin=f) for (t, d, f) in morceaux
+        ]
+        scissions.append((e, fragments))
+        _log.info(
+            "M2 scission : %r → %s",
+            e.texte,
+            " | ".join(f.texte for f in fragments),
+        )
+        sortie.extend(fragments)
     return sortie
 
 

@@ -85,11 +85,104 @@ SEUIL_ATC = 95.0
 # parfait (« tumeur » vs « Tumeur maligne du sein » rend 94).
 SEUIL_SPECIFICITE = 0.90
 
+# ---------------------------------------------------------------------------
+# M1/MANGUE v9 — critère de mot DISCRIMINANT (CIM-10)
+# ---------------------------------------------------------------------------
+# Constat mesuré : « insuffisance rénale » → I50 « Insuffisance cardiaque »
+# à 0,78 et « zygarthrose » → M15 « Polyarthrose » à 0,783 — exactement à la
+# frontière du seuil 78, calibré sur un échantillon où les faux tombaient à
+# 0,74. AUCUN réglage de seuil ne sépare ces cas : le mot qui DISTINGUE les
+# pathologies (« rénale » contre « cardiaque », « zyg- » contre « poly- »)
+# pèse peu dans un score global qui, lui, est dominé par le mot tête commun.
+# Le critère est STRUCTUREL et s'applique EN PLUS du seuil :
+#   - les têtes génériques (« insuffisance », « maladie »…) ne prouvent
+#     rien seules : presque tous les libellés CIM-10 en contiennent une ;
+#   - les autres mots (discriminants) doivent avoir un correspondant
+#     (fuzz.ratio ≥ 85) dans le libellé, sinon le code est refusé ;
+#   - exception : un libellé de REGROUPEMENT (« Fibrillation ET flutter »)
+#     couvre une famille — au moins un discriminant suffit (I48 reste le
+#     code d'une fibrillation isolée, non-régression explicite).
+# La latéralité et la sévérité ne sont JAMAIS discriminantes : « insuffisance
+# cardiaque droite » doit garder I50 (checklist MANGUE : le cas où I50 est
+# JUSTE — c'est lui qui vérifie que M1 répare sans casser).
+_TETES_GENERIQUES = {
+    "insuffisance", "maladie", "maladies", "syndrome", "trouble", "troubles",
+    "lesion", "lesions", "anomalie", "anomalies", "atteinte", "affection",
+    "affections", "arthrose", "douleur", "douleurs", "infection", "infections",
+    "tumeur", "tumeurs", "accident", "deficit", "inflammation",
+    "chronique", "aigu", "aigue", "primitive", "essentielle", "sans",
+    "precision", "autres", "autre",
+    # Latéralité / sévérité : qualificatifs jamais distinctifs.
+    "droite", "gauche", "bilateral", "bilaterale", "severe", "severes",
+    "legere", "moderee", "avancee", "terminale",
+}
+# Mots d'un libellé qui signalent un REGROUPEMENT (le code couvre une
+# famille, pas une entité précise).
+_MOTS_REGROUPEMENT = {"et", "ou", "autres"}
+
+
+def discriminants(terme: str) -> set[str]:
+    """Mots qui portent l'information distinctive d'un terme médical (M1).
+
+    Les têtes génériques sont retirées : leur correspondance seule ne
+    prouve rien (« insuffisance » est dans « Insuffisance cardiaque » et
+    dans « Insuffisance rénale »). Les mots de moins de 4 lettres sont
+    exclus (articles, prépositions, abréviations courtes comme « AVC » —
+    leur information vit dans le contexte, pas dans le mot).
+    """
+    return {
+        m
+        for m in re.split(r"[^a-z0-9]+", _norm(terme))
+        if len(m) > 3 and m not in _TETES_GENERIQUES
+    }
+
+
+def _regroupe(libelle: str) -> bool:
+    """Le libellé est une entrée de REGROUPEMENT (conjonction, « autres »)."""
+    mots = set(re.split(r"[^a-z0-9]+", _norm(_noyau(libelle))))
+    return bool(mots & _MOTS_REGROUPEMENT)
+
+
+def code_recevable(terme: str, libelle: str, seuil_mot: float = 85.0) -> bool:
+    """Refuse un code dont le libellé ne reprend pas les discriminants (M1).
+
+    « insuffisance rénale » a pour discriminant « rénale », absent de
+    « Insuffisance cardiaque » : refusé quel que soit le score global.
+    « Maladie rénale chronique » garde N18 : « rénale » est présent.
+    « zygarthrose » (mot-valise) : « zygarthrose » vs « polyarthrose » =
+    70 < 85 — les préfixes diffèrent, les racines portent le sens.
+    Terme purement générique (« tumeur ») : recevable seulement si le
+    libellé n'affirme rien de plus (« allergie » ↔ « Allergie, sans
+    précision » passe ; « insuffisance » ↔ « Insuffisance cardiaque »
+    est refusé).
+    """
+    disc = discriminants(terme)
+    mots_libelle = re.split(r"[^a-z0-9]+", _norm(libelle))
+    if not disc:
+        return not discriminants(_noyau(libelle))
+    regroupement = _regroupe(libelle)
+    au_moins_un = False
+    for mot in disc:
+        if any(fuzz.ratio(mot, m) >= seuil_mot for m in mots_libelle):
+            au_moins_un = True
+        elif not regroupement:
+            return False
+    return au_moins_un
+
 
 def normalize_diagnosis(text: str) -> dict:
     rows = _load("cim10_fr.tsv")
     choices = {_norm(r["libelle"]): r for r in rows}
     row, score = _best_match(text, choices, threshold=SEUIL_CIM10)
+    # M1/MANGUE v9 — critère de mot discriminant, AVANT la spécificité :
+    # un score global de 78 ne sépare plus « insuffisance rénale » de
+    # I50 « Insuffisance cardiaque » (mesuré) ; le mot qui porte
+    # l'information clinique doit exister dans le libellé, sinon aucun
+    # code. « AVC » nu est refusé ici aussi : I63 « Infarctus cérébral
+    # (AVC ischémique) » affirme l'ischémie, que l'abréviation seule ne
+    # documente pas (I64 « AVC non précisé » serait le code honnête).
+    if row is not None and not code_recevable(text, row["libelle"]):
+        row = None
     # Règle de spécificité (C2, DRAGON v7) : « diabète » ne doit pas porter
     # E11 « de type 2 », « tumeur » pas C50 « du sein ». Ne déclenche QUE
     # au-dessus de SEUIL_SPECIFICITE : en dessous, le filet « à vérifier »
@@ -218,9 +311,19 @@ def _qualificatifs_absents(terme: str, libelle: str, cim10: bool = False) -> set
 
 
 def _nomme_par_alias(terme: str, libelle: str) -> bool:
-    """Le terme nomme la substance par un de ses alias parenthésés."""
+    """Le terme nomme la substance par un de ses alias parenthésés.
+
+    M1/MANGUE v9 : le terme doit COUVRIR l'alias (inclusion des jetons),
+    pas simplement le toucher. L'intersection libre acceptait « AVC » comme
+    nom de « AVC ischémique » — l'abréviation nue ne documente PAS
+    l'ischémie, et I63 était attribué à 1,00 (mesuré) alors que la
+    distinction ischémique/hémorragique change la conduite à tenir.
+    « Aspirine » et « Kardegic » couvrent bien leurs alias d'une pièce.
+    """
     jetons = _tokens(terme)
-    return any(jetons & _tokens(a) for a in _alias(libelle))
+    return any(
+        _tokens(a) and _tokens(a) <= jetons for a in _alias(libelle)
+    )
 
 
 def _prefixes_parents_atc(code: str) -> list[str]:
@@ -254,6 +357,17 @@ def normalize_medication(text: str) -> dict:
     for r in rows:
         choices[_norm(r["dci"])] = r
         choices[_norm(r["libelle"])] = r
+        # M1/MANGUE v9 : les ALIAS parenthésés sont des clés à part entière.
+        # « Kardegic 75mg » ne peut pas être un sur-ensemble du libellé
+        # long « Acide acétylsalicylique (Aspirine/Kardégic) » (0,76 < 0,95
+        # — mesuré) mais EST un sur-ensemble de l'alias « Kardégic »
+        # (1,00 : la posologie accolée ne coûte rien face à la clé courte).
+        # Sans cela, C1 rejetait l'alias + posologie — régression constatée
+        # sur le VSM MANGUE (non-régression explicite de la checklist).
+        for a in _alias(r["libelle"]):
+            cle = _norm(a)
+            if cle and cle not in choices:
+                choices[cle] = r
     # le nom du médicament est en général le 1er mot significatif
     first_words = " ".join(text.split()[:3])
     # C1 (DRAGON v7) : seuil unique 0,95 sur les DEUX passes. Les

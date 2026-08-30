@@ -83,6 +83,27 @@ DIAGNOSTICS: list[tuple[str, str | None, str]] = [
     ("migraine", "G43", "référentiel absent"),
     ("grippe", "J11", "référentiel absent"),
     ("COVID", "U07.1", "référentiel absent"),
+    # --- M1/MANGUE v9 : critère de mot DISCRIMINANT (le score global ne
+    # --- sépare plus à la frontière 78 : 0,780 et 0,783 exactement) ---
+    ("insuffisance rénale", None, (
+        "M1/MANGUE v9 : I50 « Insuffisance cardiaque » à 0,780 — le "
+        "discriminant « rénale » est absent du libellé : la tête commune "
+        "ne prouve rien")),
+    ("zygarthrose", None, (
+        "M1/MANGUE v9 : M15 « Polyarthrose » à 0,783 — mot-valise, les "
+        "préfixes diffèrent (zyg- ≠ poly-) : la racine porte le sens")),
+    ("AVC", None, (
+        "M1/MANGUE v9 : I63 attribué à 1,00 (mesuré) via l'intersection "
+        "d'alias « AVC » ∩ « AVC ischémique » — l'abréviation nue ne "
+        "documente PAS l'ischémie ; I64 serait le code honnête (absent "
+        "du référentiel → aucun code)")),
+    ("AVC ischémique", "I63",
+     "M1 : non-régression — le discriminant « ischémique » est dans le libellé"),
+    ("insuffisance cardiaque droite", "I50", (
+        "M1 : non-régression checklist MANGUE — I50 est JUSTE ici, la "
+        "latéralité n'est jamais discriminante")),
+    ("insuffisance rénale chronique", "N18",
+     "M1 : non-régression — « rénale » est couvert par le libellé N18"),
     # --- ne doivent JAMAIS recevoir de code ---
     ("cholécystectomie", None, "acte chirurgical : aucun code diagnostic"),
     ("pose de stent", None, "acte : aucun code diagnostic"),
@@ -122,6 +143,12 @@ MEDICAMENTS: list[tuple[str, str | None, str]] = [
      "C1/DRAGON v7 : N06AB06 (sertraline) attribué par flou"),
     ("Ofloxacine", None,
      "C1/DRAGON v7 : N06AB03 (fluoxétine) attribué par flou"),
+    # --- M1/MANGUE v9 : les ALIAS parenthésés sont des clés du référentiel ---
+    ("Kardegic 75mg", "B01AC06", (
+        "M1/MANGUE v9 : régression C1 réparée — « Kardegic 75mg » n'est "
+        "pas un sur-ensemble du libellé long (0,76 < 0,95) mais l'est de "
+        "l'alias « Kardégic » (1,00)")),
+    ("Kardegic", "B01AC06", "alias parenthésé nu : clé à part entière"),
     # --- hors référentiel : absence attendue ---
     ("OGAST 1 gél/j", None, "nom commercial absent du référentiel"),
     ("MAALOX", None, "nom commercial absent du référentiel"),
@@ -211,7 +238,7 @@ def main() -> int:
             "# Audit du normalisateur CIM-10 / ATC",
             "",
             (
-                "Date : 2026-08-30 (v7, dossier DRAGON) · Régénérable : "
+                "Date : 2026-08-30 (v9, dossier MANGUE) · Régénérable : "
                 "`py -3.12 tools/audit_normalisateur.py`"
             ),
             "",
@@ -343,6 +370,25 @@ def main() -> int:
                 "précision », « BPCO » jamais « (BPCO) », et « AVC "
                 "ischémique » ratait I63 pour tomber sur I25 à 0,83. Un "
                 "processeur découpe désormais la ponctuation."
+            ),
+            (
+                "- **Critère de mot DISCRIMINANT (M1/MANGUE v9)** : le seuil "
+                "78 ne séparait plus les faux (« insuffisance rénale » → I50 "
+                "à 0,780, « zygarthrose » → M15 à 0,783 — frontière "
+                "exacte) : le score GLOBAL est dominé par la tête commune "
+                "du libellé, pas par le mot qui porte l'information "
+                "clinique. Nouvelle règle `code_recevable` : chaque mot "
+                "discriminant du terme (hors têtes génériques, latéralité, "
+                "sévérité) doit avoir un correspondant (fuzz.ratio ≥ 85) "
+                "dans le libellé, sinon AUCUN code. Exceptions mesurées : "
+                "les libellés de REGROUPEMENT (« Fibrillation ET flutter » "
+                "→ I48 garde une fibrillation isolée) et les deux côtés "
+                "génériques (« allergie » ↔ « Allergie, sans précision »). "
+                "« AVC » nu est aussi refusé (l'inclusion d'alias remplace "
+                "l'intersection : l'abréviation ne documente pas "
+                "l'ischémie) et les ALIAS parenthésés deviennent des clés "
+                "ATC (« Kardegic 75mg » → B01AC06 à 1,00, régression C1 "
+                "réparée)."
             ),
             "- **Entrée Pantoprazole corrigée** (constat VSM réel ABRICOT) :",
             "  absente du référentiel, la molécule accrochait « Oméprazole »",

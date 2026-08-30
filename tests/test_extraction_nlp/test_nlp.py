@@ -100,6 +100,88 @@ def test_normalize_diagnosis_cim10():
     assert n["confidence"] > 0.7
 
 
+# ---------------------------------------------------------------------------
+# M1/MANGUE v9 — critère de mot DISCRIMINANT (CIM-10)
+# ---------------------------------------------------------------------------
+
+
+def test_m1_insuffisance_renale_refuse_i50():
+    """« insuffisance rénale » → AUCUN code : le score global (0,78) est
+    exactement à la frontière du seuil, mais le discriminant « rénale » est
+    absent de « Insuffisance cardiaque » — la tête commune ne prouve rien."""
+    assert normalize_diagnosis("insuffisance rénale")["code_cim10"] is None
+
+
+def test_m1_zygarthrose_refuse_m15():
+    """Mot-valise : « zygarthrose » vs « polyarthrose » = 0,783 — les
+    préfixes diffèrent (zyg- ≠ poly-), la racine porte le sens."""
+    assert normalize_diagnosis("zygarthrose")["code_cim10"] is None
+
+
+def test_m1_avc_nu_refuse_i63():
+    """« AVC » seul ne documente PAS l'ischémie : I63 l'affirme (« AVC
+    ischémique »), I64 serait le code honnête (absent du référentiel →
+    aucun code). Mesuré avant correctif : I63 attribué à 1,00."""
+    assert normalize_diagnosis("AVC")["code_cim10"] is None
+
+
+def test_m1_avc_ischemique_garde_i63():
+    """La forme documentée garde son code : le discriminant « ischémique »
+    est dans le libellé."""
+    assert normalize_diagnosis("AVC ischémique")["code_cim10"] == "I63"
+
+
+def test_m1_non_regressions_discriminants():
+    """Les cas où le code est JUSTE ne bougent pas — c'est la vérification
+    que M1 répare sans casser (checklist MANGUE : insuffisance cardiaque
+    DROITE est le cas où I50 est correct)."""
+    assert normalize_diagnosis("insuffisance cardiaque droite")["code_cim10"] == "I50"
+    assert normalize_diagnosis("insuffisance cardiaque")["code_cim10"] == "I50"
+    # « rénale » présent dans le libellé N18 → code conservé.
+    assert (
+        normalize_diagnosis("insuffisance rénale chronique")["code_cim10"] == "N18"
+    )
+    assert normalize_diagnosis("Maladie Rénale chronique")["code_cim10"] == "N18"
+    assert normalize_diagnosis("pacemaker")["code_cim10"] == "Z95.0"
+    # I48 est un libellé de REGROUPEMENT (« Fibrillation et flutter ») :
+    # un seul discriminant suffit — sinon régression.
+    assert normalize_diagnosis("fibrillation auriculaire")["code_cim10"] == "I48"
+    # Terme purement générique vs libellé sans précision : passe.
+    assert normalize_diagnosis("allergie")["code_cim10"] == "T78.4"
+    assert normalize_diagnosis("diabète de type 2")["code_cim10"] == "E11"
+    assert normalize_diagnosis("infarctus du myocarde")["code_cim10"] == "I21"
+    assert normalize_diagnosis("BPCO")["code_cim10"] == "J44"
+
+
+def test_m1_refus_specificite_inchanges():
+    """Les refus C2 (« diabète » nu trop générique pour E11) ne régressent
+    pas : M1 et C2 sont des filets indépendants."""
+    for terme in ("diabète", "tumeur", "anémie", "cirrhose", "lombalgie"):
+        assert normalize_diagnosis(terme)["code_cim10"] is None
+
+
+def test_m1_alias_atc_posologie():
+    """Les ALIAS parenthésés sont des clés du référentiel ATC : « Kardegic
+    75mg » ne peut pas être un sur-ensemble du libellé long (0,76 < 0,95)
+    mais l'est de l'alias « Kardégic » (1,00). Régression C1 constatée sur
+    le VSM MANGUE, non-régression explicite de la checklist."""
+    assert normalize_medication("Kardegic 75mg")["code_atc"] == "B01AC06"
+    assert normalize_medication("Aspirine 75 mg")["code_atc"] == "B01AC06"
+
+
+def test_m1_non_regressions_atc():
+    """Les codes ATC du VSM MANGUE ne bougent pas."""
+    assert normalize_medication("Pantoprazole 20mg : 1/j")["code_atc"] == "A02BC02"
+    assert normalize_medication("Amlodipine 10mg : 1/j")["code_atc"] == "C08CA01"
+    assert (
+        normalize_medication("PARACETAMOL 500 mg 2 gélules")["code_atc"] == "N02BE01"
+    )
+    # Refus C1 inchangés : hors référentiel, pas de code inventé.
+    assert normalize_medication("LODOZ 5 mg")["code_atc"] is None
+    assert normalize_medication("TRAMADOL 50 mg")["code_atc"] is None
+    assert normalize_medication("SPIRAMYCINE")["code_atc"] is None
+
+
 def test_normalize_medication_atc_and_dosage():
     n = normalize_medication("Metformine 1000 mg matin et soir")
     assert n["code_atc"] == "A10BA02"

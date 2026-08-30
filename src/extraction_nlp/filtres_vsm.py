@@ -291,7 +291,7 @@ def entites_hors_pages_rejetees(entites: list, carte: list[dict]) -> list:
 # reconnue elle aussi. Complété par l'audit DRAGON v7 (C3) : cardiologie
 # interventionnelle, chirurgie tendineuse, anatomopathologie.
 _ACTES_MOTS = (
-    "excision", "exerese", "resection", "curetage", "cure de", "osteosynthese",
+    "excision", "exerese", "resection", "curetage", "cure d", "osteosynthese",
     "suture", "drainage", "drain ", "reduction", "immobilisation", "attelle",
     "platre", "reeducation", "kinesitherapie", "infiltration", "anesthesie",
     "intervention", "geste chirurgical", "lavage", "ablation", "biopsie",
@@ -306,6 +306,13 @@ _ACTES_MOTS = (
     # « ligament TENOLIG », « treillis de vicryl »).
     "ligamentoplastie", "contention", "botte", "treillis", "prothese",
     "orthese", "tenolig",
+    # M3/MANGUE v9 : chirurgie pariétale et digestve (« cure d'éventration »
+    # — NB « cure d » couvre l'apostrophe normalisée en espace ; « Interposition
+    # prothétique Pariétex », « exsufflation », « dissection » étaient restés
+    # en traitements au long cours).
+    "interposition", "exsufflation", "dissection", "reparation",
+    "incision", "abord", "coelioscop", "laparoscop", "prothetique",
+    "parietex",
 )
 _ACTES_SUFFIXES = (
     "ectomie", "otomie", "oplastie", "oscopie", "orraphie",
@@ -320,8 +327,11 @@ _ACTES_SUFFIXES = (
 # antécédents chirurgicaux (avis d'audit v7 : les router en points de
 # vigilance, rubrique alors vide sur ce dossier). « dialyse » et
 # « épuration » suivent la même route (soins, pas des actes posés).
+# M3/MANGUE v9 : « gel de xylocaïne » et « anesthésique local » — gestes
+# ponctuels, pas des traitements de fond (recommandation du relecteur).
 _SUPPORTS_MOTS = (
     "transfusion", "oxygenotherapie", "inotrope", "dialyse", "epuration",
+    "xylocaine", "anesthesique local",
 )
 
 
@@ -358,6 +368,11 @@ _TROP_GENERIQUE = {
     "plaque", "traitement", "intervention", "geste",
     "lesion osseuse", "anomalie de structure", "traitement medical",
     "traitement chirurgical",
+    # M2/MANGUE v9 : fragments purement qualificatifs issus d'une scission
+    # (« Nauffisance rénaie / Chronique sévère / Matadie cardio-… ») — un
+    # qualificatif seul ne dit ni organe, ni pathologie.
+    "chronique severe", "chronique legere", "chronique moderee",
+    "aigu severe", "severe", "bilaterale", "droite", "gauche",
 }
 
 
@@ -367,6 +382,116 @@ def est_trop_generique(valeur: str) -> bool:
     if not bas:
         return True
     return bas in _TROP_GENERIQUE
+
+
+# ---------------------------------------------------------------------------
+# M4/M5/MANGUE v9 — lexique médical des termes d'un seul mot
+# ---------------------------------------------------------------------------
+
+# Constat du relecteur : « froid », « douloureux », « gaz », « incision »,
+# « échostructure » survivent seuls dans le VSM — du bruit, pas des entrées.
+# MAIS la mesure sur les dossiers réels (ABRICOT/BANANE/DRAGON) compte
+# ~150 valeurs d'un seul mot presque toutes légitimes (« fièvre », « toux »,
+# « dyspnée », « pneumothorax », « diabète »…) : une règle « un-mot non
+# médical » ne peut reposer sur le seul référentiel (35 codes CIM-10) — elle
+# tuerait l'essentiel du vocabulaire clinique. Le lexique ci-dessous est
+# donc CALIBRÉ SUR LA MESURE : abréviations + familles de suffixes + liste
+# blanche des termes d'un seul mot observés dans les dossiers réels.
+# « incision », « exsufflation », « dissection » n'y figurent PAS : un mot
+# de geste seul ne dit rien (« incision » de quoi ?) — c'est la demande M5,
+# cohérente avec M3 qui les sort déjà des traitements.
+
+# Abréviations médicales françaises courantes (formes normalisées).
+_ABREVIATIONS_MEDICALES = {
+    "avc", "ait", "hta", "irc", "aomi", "bpco", "ddb", "bmr", "esv",
+    "imc", "vih", "vhb", "vhc", "sida", "fa", "acfa", "tvp", "mtev",
+    "ep", "aeg", "sas", "ppc", "saio", "dnid", "did", "raa", "mici",
+    "ins", "sro", "eap", "oap", "imi", "erm", "icl",
+}
+
+# Familles de suffixes médicaux : un mot d'au moins 6 lettres qui finit
+# ainsi est clinique par construction (-ite, -ose, -émie, -urie…). La
+# longueur écarte les collisions courantes (« site », « chose », « homme »).
+_RX_SUFFIXE_MEDICAL = re.compile(
+    r"(?:ites?|oses?|algies?|emies?|uries?|opathies?|omes?|plegies?|"
+    r"graphies?|scopies?|therapies?|cardies?|phagies?|pnees?|ectasies?|"
+    r"orragies?|cytoses?|iases?|megalies?|celes?|olymphies?|trophies?|"
+    r"tomies?|otomies?|ectomies?|oplasties?|orrhaps?)$"
+)
+
+# Termes d'un seul mot observés dans les VSM réels (formes NORMALISÉES —
+# sans accents, minuscules, cf. normaliser() ; y compris bruits d'OCR
+# conservés par choix de non-régression). Le diff avant/après v9 a montré
+# que « ronflement », « asthénie », « palpitation », « intertrigo »,
+# « dysplasie », « fibro-ædème », « mécro-calcigication » tombaient sinon
+# dans le piège de la règle — mots médicaux réels des dossiers réels.
+_MOTS_MEDICAUX_UN_MOT = {
+    # Signes et symptômes.
+    "fievre", "frissons", "toux", "expectoration", "infiltrat",
+    "post-infectieuse", "hemoptysie", "dysurie", "brulures", "picotements",
+    "imperiosite", "vertiges", "hypoacousie", "acouphenes", "cephalees",
+    "migraines", "nystagmus", "tirage", "sueur", "cyanose", "oedeme",
+    "fibro-ædeme", "congestion", "friture", "ulcere", "hyperpression",
+    "naevus", "denutris", "denutrition", "deshydratation", "desaturation",
+    "syncope", "palpitations", "palpitation", "asthenie", "ronflement",
+    # Diagnostics courants d'un mot.
+    "depression", "tumeur", "retrecissement", "rhumatisme", "vegetation",
+    "plaques", "polype", "glaucome", "menopause", "phlebite",
+    "pneumothorax", "coronarien", "enterocoque", "coli", "bulles",
+    "vulvovaginale", "mitotique", "febrile", "hemorragique", "hyperdense",
+    "hyperlobulee", "duodenus", "fibrino-leucocytaires",
+    "mecro-calcigication",
+    "micro-kyste", "contro-laterale", "irritations", "arthrose",
+    "diabete", "allergie", "pacemaker", "obesite", "epilepsie", "asthme",
+    "hypertension", "hypotension", "angor", "chirurgie", "prophylaxie",
+    "hematoorite", "bascphiles", "oesophase", "dysartjhrie",
+    "intertrigo", "dysplasie",
+    # Actes et rééducation observés dans les dossiers réels (un mot de
+    # geste NON observé — « incision », « exsufflation » — reste hors
+    # liste : cf. commentaire du bloc).
+    "palpation", "infiltration", "reeducation", "lavage", "drainage",
+    "resection", "exerese", "contention", "suture", "episiotomie",
+    "radiographie", "echographie", "mammographie", "scintigraphie",
+    # Classes médicamenteuses (un jour en antécédents : « arrêt des
+    # anticoagulants »).
+    "antalgiques", "antibiotiques", "antibiotherapie", "anticoagulant",
+    "anticoagulants", "anti-inflammatoire", "anti-inflammatoires",
+    "corticoides", "diuretiques", "benzodiazepine", "morphiniques",
+    "quinolones", "bactrim", "ogast", "lanzor",
+    # Expositions (facteurs de risque).
+    "tabagisme", "surpoids", "sedentarite", "alcoolisme",
+}
+
+
+def est_fragment_non_medical(valeur: str) -> bool:
+    """M4/M5/MANGUE — valeur sans contenu médical, trop courte pour se
+    suffire.
+
+    Deux règles du relecteur v9, unifiées :
+    - un terme d'UN SEUL mot hors lexique médical est du bruit (« froid »,
+      « douloureux », « gaz », « échostructure », « Type 2 ») ;
+    - une valeur de MOINS DE DEUX mots significatifs (≥ 3 lettres) sans
+      AUCUN mot médical est un fragment orphelin de son mot porteur
+      (« Type 2 » orphelin de « diabète de type 2 »).
+    Un seul mot médical suffit à sauver la valeur (« HTA », « fièvre »,
+    « Kardegic ») ; une valeur de deux mots significatifs sans mot médical
+    passe (« masse musculaire » — hors périmètre M5, mesuré sans danger).
+    """
+    mots = [m for m in normaliser(valeur or "").split(" ") if m]
+    significatifs = [m for m in mots if len(m) >= 3]
+    if not significatifs:
+        return True
+    for m in significatifs:
+        # Mot du set P4 (« douleur », « kyste ») : clinique mais trop
+        # vague — c'est P4 qui le rejettera avec SA règle précise
+        # (« terme trop générique isolé »), pas la règle un-mot.
+        if m in _TROP_GENERIQUE:
+            return False
+        if m in _ABREVIATIONS_MEDICALES or m in _MOTS_MEDICAUX_UN_MOT:
+            return False
+        if len(m) >= 6 and _RX_SUFFIXE_MEDICAL.search(m):
+            return False
+    return len(significatifs) < 2
 
 
 # ---------------------------------------------------------------------------
@@ -398,16 +523,21 @@ def est_facteur_risque(valeur: str) -> bool:
 
 # Zone d'en-tête : jusqu'au premier titre de rubrique reconnu (borne 1200
 # caractères : le papier à lettres du cabinet repousse la mention bien au-
-# delà des 300 anciennement filtrés), sinon 500 caractères.
-ZONE_ENTETE = 500
+# delà des 300 anciennement filtrés), sinon plafonnée à 200 caractères.
+# M4/MANGUE v9 : l'ancien plafond de 500 laissait passer les INTITULÉS DE
+# SERVICE (« Pathologies du Sommeil », « MALADIES DU FOIE » — comptes rendus
+# de spécialistes) qui vivent vers 200-500 caractères : un en-tête de
+# cabinet tient en 200 ; au-delà c'est du corps de texte, protégé par le
+# critère de stabilité (cf. formes_en_tete_repetees).
+ZONE_ENTETE = 200
 ZONE_ENTETE_MAX = 1200
 
 
 def zone_en_tete(texte_page: str) -> str:
-    """Zone d'en-tête de la page : jusqu'au premier titre, sinon 500 car."""
+    """Zone d'en-tête de la page : jusqu'au premier titre, plafond 200 car."""
     m = TITRES_RX.search(texte_page or "")
     if m and m.start() <= ZONE_ENTETE_MAX:
-        return texte_page[: m.start()]
+        return texte_page[: min(m.start(), ZONE_ENTETE)]
     return (texte_page or "")[:ZONE_ENTETE]
 
 
@@ -415,9 +545,13 @@ def formes_en_tete_repetees(formes: list[str], carte: list[dict]) -> dict[str, i
     """Formes apparaissant dans l'en-tête de PLUS de 3 pages (P6).
 
     Un vrai diagnostic répété est dispersé dans le corps du texte ; un
-    en-tête est toujours au même endroit, page après page. Retourne
-    {forme normalisée: nombre de pages} pour les formes rejetées — le
-    nombre alimente le détail du rejet journalisé.
+    en-tête est toujours au même endroit, page après page. M4/MANGUE v9 :
+    la STABILITÉ DE POSITION (± 50 caractères, sur la position dans la zone
+    d'en-tête normalisée) distingue les deux — un intitulé de service est
+    posé au même endroit sur chaque page, un diagnostic cité en début de
+    corps bouge avec le texte. Retourne {forme normalisée: nombre de
+    pages} pour les formes rejetées — le nombre alimente le détail du
+    rejet journalisé.
     """
     if not carte or not formes:
         return {}
@@ -427,10 +561,66 @@ def formes_en_tete_repetees(formes: list[str], carte: list[dict]) -> dict[str, i
         bas = normaliser(forme)
         if not bas:
             continue
-        n_pages = sum(1 for z in zones if bas in z)
-        if n_pages > 3:
-            rejetees[bas] = n_pages
+        presentes = [z.find(bas) for z in zones if bas in z]
+        # M4 : stabilité de position — toutes les occurrences à ± 50 car.
+        # de la première ; une seule position erratique suffit à inocenter
+        # la forme (c'est du corps de texte, pas du papier à lettres).
+        if len(presentes) > 3 and all(
+            abs(p - presentes[0]) <= 50 for p in presentes
+        ):
+            rejetees[bas] = len(presentes)
     return rejetees
+
+
+# ---------------------------------------------------------------------------
+# M2/MANGUE v9 — scission des entités concaténées
+# ---------------------------------------------------------------------------
+
+# Deux items successifs d'une liste se retrouvent concaténés en une seule
+# chaîne quand l'OCR perd le saut de ligne : « HTA Gastrite chronique »,
+# « deficit moteur Hypoesthesies orteilles distales ». Le modèle étiquette
+# alors UNE entité pour deux pathologies sans rapport — inexploitable en
+# normalisation, indédoublonnable, et les compteurs de complétude mentent.
+# Détection : un espace séparant un MOT AUTONOME (≥ 3 minuscules, ou une
+# ABRÉVIATION de 2-5 capitales — « HTA », « BPCO » — non précédée d'une
+# capitale) d'un mot CAPITALISÉ (majuscule + minuscules). Les éponymes
+# médicaux sont protégés PAR CONSTRUCTION : ils suivent une préposition
+# courte (« maladie de Crohn », « anémie de Biermer » — « de » = 2
+# lettres, jamais coupé ; « d'Achille » colle à l'apostrophe, pas à
+# l'espace). Un mot TOUT en capitales après (« MALADIES DU FOIE ») n'est
+# jamais coupé : le lookahead exige une majuscule suivie de minuscules.
+# Groupe capturant (et non lookbehind) : les abréviations font 2 à 5
+# lettres, un lookbehind à largeur variable n'existe pas en re.
+_RX_CONCAT = re.compile(
+    r"([a-zà-ÿ]{3,}|(?<![A-ZÀ-Þ])[A-ZÀ-Þ]{2,5})\s+(?=[A-ZÀ-Þ][a-zà-ÿ]{3})"
+)
+
+
+def scinder_concatenation(
+    valeur: str, debut: int, fin: int
+) -> list[tuple[str, int, int]]:
+    """Scinde une entité qui agrège deux items de liste distincts (M2).
+
+    Retourne [(texte, debut, fin)] — un seul élément si aucune coupe. Les
+    offsets de chaque fragment sont recalculés dans le document source :
+    l'ancrage XAI est préservé (chaque fragment reste un extrait exact).
+    Les débris trop courts (< 3 caractères nettoyés) sont écartés — ils
+    mourraient de toute façon au validateur (règle des 3 lettres).
+    """
+    coupes = [(m.end(1), m.end()) for m in _RX_CONCAT.finditer(valeur)]
+    if not coupes:
+        return [(valeur, debut, fin)]
+    morceaux: list[tuple[str, int, int]] = []
+    precedent = 0
+    for coupe_debut, coupe_fin in coupes:
+        if coupe_debut <= precedent:  # coupes qui se chevauchent : ignorer
+            continue
+        morceaux.append(
+            (valeur[precedent:coupe_debut], debut + precedent, debut + coupe_debut)
+        )
+        precedent = coupe_fin
+    morceaux.append((valeur[precedent:], debut + precedent, fin))
+    return [m for m in morceaux if len(m[0].strip()) >= 3]
 
 
 # ---------------------------------------------------------------------------

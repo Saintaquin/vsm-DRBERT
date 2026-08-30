@@ -25,12 +25,14 @@ from src.extraction_nlp.filtres_vsm import (
     est_facteur_risque,
     est_trop_generique,
     est_un_acte,
+    est_un_support_therapeutique,
     etendre_posologie,
     formes_en_tete_repetees,
     ligne_rejet,
     page_de,
     page_non_prescriptive,
     pages_non_prescriptives,
+    scinder_concatenation,
     tracer_rejet,
     zone_en_tete,
 )
@@ -539,14 +541,24 @@ def test_p6_en_tete_3_pages_passe_encore():
 
 
 def test_p6_zone_en_tete_bornee_au_titre():
-    """La zone d'en-tête s'arrête au premier titre de rubrique reconnu —
-    même au-delà de 500 caractères, le papier à lettres repousse la mention
-    (borne haute 1200 : au-delà, c'est du corps de texte)."""
-    page = ("Cabinet du Dr X\n" + "adresse sur plusieurs lignes\n" * 30 +
-            "Maladies du Foie\n" + "\n" + "ANTÉCÉDENTS :\nCholécystectomie.")
-    zone = zone_en_tete(page)
-    assert "Maladies du Foie" in zone  # à ~850 caractères : dans la zone
+    """La zone d'en-tête s'arrête au premier titre de rubrique reconnu
+    (s'il est dans les 200 premiers caractères), sinon au PLAFOND de 200
+    caractères (M4/MANGUE v9 : les intitulés de service vivaient à
+    200-500 car. avec l'ancien plafond ; au-delà de 200 c'est du corps de
+    texte, protégé par le critère de stabilité de position)."""
+    # Titre VSM à 60 caractères : la zone s'y arrête.
+    page_courte = "Cabinet du Dr X\nadresse\nANTÉCÉDENTS :\nCholécystectomie."
+    zone = zone_en_tete(page_courte)
     assert "Cholécystectomie" not in zone  # après le titre : hors zone
+    # Papier à lettres long (titre au-delà de 200) : la zone est plafonnée
+    # à 200 caractères — « Maladies du Foie » à ~850 n'en fait plus partie.
+    page_longue = (
+        "Cabinet du Dr X\n" + "adresse sur plusieurs lignes\n" * 30
+        + "Maladies du Foie\n" + "\n" + "ANTÉCÉDENTS :\nCholécystectomie."
+    )
+    zone2 = zone_en_tete(page_longue)
+    assert len(zone2) <= 200
+    assert "Maladies du Foie" not in zone2
 
 
 # ---------------------------------------------------------------------------
@@ -1085,3 +1097,329 @@ def test_c2_ponctuation_des_libelles_ne_bloque_plus_le_match():
     assert normalize_diagnosis("pacemaker")["code_cim10"] == "Z95.0"
     assert normalize_diagnosis("hypothyroïdie")["code_cim10"] == "E03.9"
     assert normalize_diagnosis("hyperlipidémie")["code_cim10"] == "E78.5"
+
+
+# ---------------------------------------------------------------------------
+# M2-M5/MANGUE v9 — scission, actes, rangement, fragments
+# ---------------------------------------------------------------------------
+
+
+def test_m2_scinder_concatenation_cas_mangue():
+    """Les trois concaténations du dossier MANGUE sont coupées, avec des
+    offsets recalculés (chaque fragment reste un extrait EXACT du texte)."""
+    morceaux = scinder_concatenation("HTA Gastrite chronique", 100, 121)
+    assert [m[0] for m in morceaux] == ["HTA", "Gastrite chronique"]
+    assert (morceaux[0][1], morceaux[0][2]) == (100, 103)
+    assert morceaux[1][1] == 104  # offset recalculé dans le document source
+
+    morceaux = scinder_concatenation(
+        "deficit moteur Hypoesthesies orteilles distales", 0, 45
+    )
+    assert [m[0] for m in morceaux] == [
+        "deficit moteur",
+        "Hypoesthesies orteilles distales",
+    ]
+
+    morceaux = scinder_concatenation(
+        "Nauffisance rénaie Chronique sévère Matadie cardio- vasculaire", 0, 61
+    )
+    assert [m[0] for m in morceaux] == [
+        "Nauffisance rénaie",
+        "Chronique sévère",
+        "Matadie cardio- vasculaire",
+    ]
+
+
+def test_m2_scission_epargne_les_eponymes():
+    """Les éponymes médicaux suivent une préposition courte ou collent à
+    une apostrophe : jamais coupés (sinon « maladie de Crohn » deviendrait
+    deux fragments morts)."""
+    for valeur in (
+        "maladie de Crohn",
+        "maladie de Parkinson",
+        "maladie d'Alzheimer",
+        "anémie de Biermer",
+        "rupture du tendon d'Achille droit",
+        "MALADIES DU FOIE",  # tout en capitales : jamais coupé
+        "Insuffisance cardiaque droite",
+    ):
+        assert len(scinder_concatenation(valeur, 0, len(valeur))) == 1, valeur
+
+
+def test_m2_scission_chaine_drbert(monkeypatch):
+    """INTÉGRATION : « HTA Gastrite chronique » extrait comme UNE entité
+    DrBERT (saut de ligne perdu à l'OCR) → DEUX entrées du VSM."""
+    from src.extraction_nlp import drbert_extractor as dtx
+    from src.extraction_nlp.drbert_extractor import Entite
+    from src.extraction_nlp.pipeline import run_pipeline
+
+    valeur = "HTA Gastrite chronique"
+    texte = (
+        "Consultation du Dr X.\nANTÉCÉDENTS :\n"
+        f"{valeur}\nTRAITEMENTS : Kardegic 75mg."
+    )
+    debut = texte.index(valeur)
+    entites = [
+        Entite("problem", valeur, debut, debut + len(valeur), 0.9),
+        Entite("treatment", "Kardegic 75mg", 0, 0, 0.9),  # offset recalé plus bas
+    ]
+    # Offsets exacts pour Kardegic.
+    kd = texte.index("Kardegic 75mg")
+    entites[1] = Entite("treatment", "Kardegic 75mg", kd, kd + len("Kardegic 75mg"), 0.9)
+
+    class _FakeMoteur:
+        def annoter(self, t: str) -> list[Entite]:
+            return list(entites)
+
+    monkeypatch.setattr(dtx, "_MOTEUR", _FakeMoteur())
+    ocr_json = {
+        "document_id": "doc_m2",
+        "ocr_engine": "tesseract",
+        "text": texte,
+        "pages": [{"page": 1, "text": texte, "confidence": 0.9}],
+    }
+    vsm = run_pipeline(ocr_json, nlp_engine="drbert")
+    valeurs = [c["valeur"] for c in vsm["sections"].get("antecedents", [])]
+    assert "HTA" in valeurs
+    assert "Gastrite chronique" in valeurs
+    assert not any("HTA Gastrite" in v for v in valeurs)
+
+
+def test_m2_garde_original_si_fragments_morts(monkeypatch):
+    """Garde de non-perte : si AUCUN fragment ne survit, l'entité originale
+    reprend sa place (« Insuffisance Rénale », majuscule OCR accidentelle —
+    les fragments mourraient, l'original est conservé)."""
+    from src.extraction_nlp import drbert_extractor as dtx
+    from src.extraction_nlp.drbert_extractor import Entite
+    from src.extraction_nlp.pipeline import run_pipeline
+
+    valeur = "Insuffisance Rénale"
+    texte = f"ANTÉCÉDENTS :\n{valeur}\nTRAITEMENTS : aucun."
+    debut = texte.index(valeur)
+    entites = [Entite("problem", valeur, debut, debut + len(valeur), 0.9)]
+
+    class _FakeMoteur:
+        def annoter(self, t: str) -> list[Entite]:
+            return list(entites)
+
+    monkeypatch.setattr(dtx, "_MOTEUR", _FakeMoteur())
+    ocr_json = {
+        "document_id": "doc_m2_garde",
+        "ocr_engine": "tesseract",
+        "text": texte,
+        "pages": [{"page": 1, "text": texte, "confidence": 0.9}],
+    }
+    vsm = run_pipeline(ocr_json, nlp_engine="drbert")
+    toutes = [c["valeur"] for rub in vsm["sections"].values() for c in rub]
+    assert valeur in toutes  # jamais perdu
+
+
+def test_m3_actes_complementaires_sortis_des_traitements():
+    """M3 : interposition, exsufflation, dissection, réparation, incision,
+    coelioscopie, pariétex → des ACTES (antécédents), pas des traitements."""
+    for acte in (
+        "Interposition prothétique",
+        "Exsufflation",
+        "Dissection",
+        "réparation pariétale",
+        "incision",
+        "coelioscopie",
+        "prothèse Pariétex",
+        "cure d'éventration",
+    ):
+        assert est_un_acte(acte), acte
+
+
+def test_m3_gel_xylocaine_en_support():
+    """« gel de xylocaïne » : anesthésique de geste → point de vigilance,
+    pas un traitement de fond (recommandation explicite du relecteur)."""
+    assert est_un_support_therapeutique("gel de xylocaïne")
+    assert est_un_support_therapeutique("anesthésique local")
+
+
+def test_m3_non_regression_ventilation():
+    """La ventilation (PPC, aide ventilatoire…) reste un TRAITEMENT — c'est
+    la non-régression explicite de la checklist MANGUE."""
+    for valeur in (
+        "PPC autopilotée",
+        "traitement ventilatoire",
+        "aide ventilatoire",
+        "pression positive",
+    ):
+        assert not est_un_acte(valeur), valeur
+        assert not est_un_support_therapeutique(valeur), valeur
+
+
+def test_m4_corticoïdes_routes_en_traitements():
+    """« giucoconticoids » (OCR de glucocorticoïdes) étiqueté « problem »
+    par DrBERT → TRAITEMENT : une classe médicamenteuse n'est pas une
+    pathologie. Tolérant aux fautes d'OCR (« conticoid »)."""
+    from src.extraction_nlp.rubriques import rubrique_de
+
+    assert (
+        rubrique_de("problem", "giucoconticoids", "", "giucoconticoids")
+        == "traitements_long_cours"
+    )
+    assert (
+        rubrique_de("problem", "corticothérapie", "", "corticothérapie")
+        == "traitements_long_cours"
+    )
+    # L'allergie aux corticoïdes reste une ALLERGIE (sécurité du VSM) —
+    # dans la vraie chaîne, le contexte englobe l'entité.
+    assert (
+        rubrique_de(
+            "problem", "allergie aux corticoïdes", "", "allergie aux corticoïdes"
+        )
+        == "allergies"
+    )
+
+
+def test_m4_anti_trim21_rejete():
+    """Dosage d'auto-anticorps : « anti-TRIM21 » en pathologie = résultat
+    de laboratoire, rejeté. Les classes en minuscules passent."""
+    from src.extraction_nlp.entity_extractor import _valider_raison
+
+    texte = "Dosage anti-TRIM21 positif. Arrêt des anti-inflammatoires."
+    item = {"valeur": "anti-TRIM21", "passage": "anti-TRIM21", "score": 0.9}
+    ok, raison = _valider_raison(item, texte, "pathologies_actives")
+    assert ok is None
+    assert raison[0] == "validateur_dosage_anticorps"
+    # « anti-inflammatoires » (minuscule) : classe, pas un dosage.
+    item2 = {"valeur": "anti-inflammatoires", "passage": "anti-inflammatoires", "score": 0.9}
+    ok2, _ = _valider_raison(item2, texte, "traitements_long_cours")
+    assert ok2 is not None
+
+
+def test_m4_type2_rejete():
+    """« Type 2 » : moins de deux mots significatifs sans terme médical —
+    fragment orphelin de « diabète de type 2 »."""
+    from src.extraction_nlp.entity_extractor import _valider_raison
+
+    texte = "Diabète de type 2. Type 2."
+    item = {"valeur": "Type 2", "passage": "Type 2", "score": 0.9}
+    ok, raison = _valider_raison(item, texte, "antecedents")
+    assert ok is None
+    assert raison[0] == "validateur_non_medical"
+
+
+def test_m4_entete_service_p6():
+    """P6/M4 : un INTITULÉ DE SERVICE répété en tête de pages à position
+    stable est rejeté, même s'il ressemble à un diagnostic (« Pathologies
+    du Sommeil » — clinique de spécialiste émettrice, jamais un diagnostic)."""
+    entete = "Centre de Pneumologie et Pathologies du Sommeil\n"
+    corps = "Compte rendu de consultation détaillé. " * 20
+    pages = [
+        {"texte": entete + corps + "\nSyndrome d'apnée du sommeil."},
+        {"texte": entete + corps + "\nSuivi habituel."},
+        {"texte": entete + corps + "\nExamen normal."},
+        {"texte": entete + corps + "\nPoursuite du suivi."},
+    ]
+    rejetees = formes_en_tete_repetees(["Pathologies du Sommeil"], pages)
+    assert "pathologies du sommeil" in rejetees
+    # Un diagnostic cité en début de corps BOUGE d'une page à l'autre
+    # (préambule de longueur variable : ± 100 caractères d'écart) :
+    # positions instables → innocenté.
+    pages_variables = [
+        {"texte": "Consultation du " + "bla. " * (i * 25) + "Douleur thoracique."}
+        for i in range(5)
+    ]
+    rejetees2 = formes_en_tete_repetees(["Douleur thoracique"], pages_variables)
+    assert "douleur thoracique" not in rejetees2
+
+
+def test_m5_fragments_un_mot_rejetes():
+    """« froid », « douloureux », « gaz », « échostructure », « incision » :
+    termes d'un seul mot hors lexique médical — bruit (liste M5 du
+    relecteur)."""
+    from src.extraction_nlp.entity_extractor import _valider_raison
+
+    texte = "froid. douloureux. gaz. échostructure. incision."
+    for mot in ("froid", "douloureux", "gaz", "échostructure", "incision"):
+        item = {"valeur": mot, "passage": mot, "score": 0.9}
+        ok, raison = _valider_raison(item, texte, "pathologies_actives")
+        assert ok is None, mot
+        assert raison[0] == "validateur_non_medical", mot
+
+
+def test_m5_un_mot_medicaux_conserves():
+    """Non-régression MESURÉE sur ABRICOT/BANANE/DRAGON (~150 valeurs d'un
+    seul mot légitimes) : le lexique couvre le vocabulaire clinique réel."""
+    from src.extraction_nlp.entity_extractor import _valider_raison
+
+    texte = (
+        "HTA. fièvre. toux. dyspnée. pneumothorax. diabète. tabagisme. "
+        "AVC. céphalées. oesophagite. BACTRIM. Résection."
+    )
+    for mot in (
+        "HTA",
+        "fièvre",
+        "toux",
+        "dyspnée",
+        "pneumothorax",
+        "diabète",
+        "tabagisme",
+        "AVC",
+        "céphalées",
+        "oesophagite",
+        "BACTRIM",
+        "Résection",
+    ):
+        rubrique = "traitements_long_cours" if mot == "BACTRIM" else "pathologies_actives"
+        item = {"valeur": mot, "passage": mot, "score": 0.9}
+        ok, _ = _valider_raison(item, texte, rubrique)
+        assert ok is not None, mot
+
+
+def test_m5_un_mot_medicaux_dragon_banane():
+    """Suite du calibrage mesuré : les un-mot réels de DRAGON/BANANE
+    (diff avant/après v9) — y compris la ligature « æ » que NFD ne
+    décompose PAS (« fibro-ædème » → « fibro-ædeme », pas « fibro-aedeme » :
+    premier piège mesuré de la liste blanche)."""
+    from src.extraction_nlp.filtres_vsm import est_fragment_non_medical
+
+    for mot in (
+        "fibro-ædème",
+        "ronflement",
+        "asthénie",
+        "palpitation",
+        "intertrigo",
+        "dysplasie",
+        "mécro-calcigication",
+    ):
+        assert not est_fragment_non_medical(mot), mot
+
+
+def test_m5_fins_tronquees_etendues():
+    """« hypersignal en », « dilatation des voies biliaires intra »,
+    « Lavage eau + » : fins tronquées — débuts de phrases radiologiques et
+    connecteur de protocole."""
+    from src.extraction_nlp.entity_extractor import _valider_raison
+
+    texte = (
+        "hypersignal en. dilatation des voies biliaires intra. Lavage eau +."
+    )
+    for valeur in (
+        "hypersignal en",
+        "dilatation des voies biliaires intra",
+        "Lavage eau +",
+    ):
+        item = {"valeur": valeur, "passage": valeur, "score": 0.9}
+        ok, raison = _valider_raison(item, texte, "pathologies_actives")
+        assert ok is None, valeur
+        assert raison[0] == "validateur_fragment_tronque", valeur
+
+
+def test_m5_phrase_rejetee():
+    """« foie est augmenté de taille » : verbe d'état conjugué au milieu —
+    phrase de compte rendu, pas une entrée de liste."""
+    from src.extraction_nlp.entity_extractor import _valider_raison
+
+    texte = "Le foie est augmenté de taille aux dépens du lobe droit."
+    item = {
+        "valeur": "foie est augmenté de taille",
+        "passage": "foie est augmenté de taille",
+        "score": 0.9,
+    }
+    ok, raison = _valider_raison(item, texte, "pathologies_actives")
+    assert ok is None
+    assert raison[0] == "validateur_phrase"
