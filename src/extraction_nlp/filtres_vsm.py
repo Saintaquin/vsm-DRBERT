@@ -508,8 +508,13 @@ def dedupliquer(champs: list[dict]) -> list[dict]:
     Le représentant conservé est la forme la plus FRÉQUENTE (à départager
     par le score le plus élevé) — jamais la plus longue, souvent la plus
     bruitée. Chaque entité fusionnée porte ``occurrences`` (nombre de
-    mentions) et ``pages`` (pages où elle apparaît) : « Ulcère bulbaire
-    linéaire — 15 mentions, pages 8 à 62 » restitue la chronicité.
+    mentions), ``pages`` (pages où elle apparaît) et ``passages`` (les
+    extraits sources DISTINCTS de chaque mention, dans l'ordre du document)
+    : « Ulcère bulbaire linéaire — 15 mentions, pages 8 à 62 » restitue la
+    chronicité, et « Voir les N passages sources » les montre TOUS dans le
+    visualiseur — un seul extrait cachait les fautes d'OCR propres à chaque
+    page. Les passages restent des découpes EXACTES du texte source
+    (garantie anti-hallucination inchangée).
     """
     clusters: list[dict] = []  # {formes: {forme: [champ...]}, membres: [...]}
 
@@ -575,6 +580,25 @@ def dedupliquer(champs: list[dict]) -> list[dict]:
             )
             if pages:
                 nouveau["pages"] = pages
+            # Tous les passages DISTINCTS des mentions, dans l'ordre du
+            # document (tri par offset de début) : le visualiseur peut
+            # surligner puis FAIRE DÉFILER chaque mention. Les formes
+            # strictement identiques ne sont gardées qu'une fois — le
+            # surlignage les retrouve toutes dans le texte.
+            passages: list[str] = []
+            vus: set[str] = set()
+            for m in sorted(
+                membres,
+                key=lambda m: (m.get("source") or {}).get("offset_debut", 0) or 0,
+            ):
+                p = ((m.get("source") or {}).get("passage") or "").strip()
+                if not p:
+                    p = (m.get("passage") or m.get("valeur") or "").strip()
+                if p and p not in vus:
+                    vus.add(p)
+                    passages.append(p)
+            if passages:
+                nouveau["passages"] = passages
             # Le cluster peut avoir un code quand le représentant n'en a pas
             # (fusion par similarité d'une forme normalisée avec une autre).
             if not nouveau.get("code_normalise"):

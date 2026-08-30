@@ -49,6 +49,10 @@ export interface ChampTrace {
    *  où l'entrée apparaît — restitue la chronicité d'un dossier long. */
   occurrences?: number;
   pages?: number[];
+  /** Passages sources DISTINCTS de chaque mention fusionnée (P2), dans
+   *  l'ordre du document : « Voir les N passages sources » les surligne
+   *  TOUTES dans le visualiseur — un seul extrait cachait les autres. */
+  passages?: string[];
 }
 /** Rapport de la phase NLP (XAI) — rempli par le backend : moteur réel
  *  (DrBERT-CASM2 par défaut, règles en repli, LLM sur demande). */

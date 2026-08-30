@@ -2,6 +2,36 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.5] — 2026-08-24
+
+### « Voir le passage source » : toutes les mentions, avec défilement
+
+Constat : une entrée fusionnée par P2 porte « 15 mentions, pages 8 à 74 »
+mais un SEUL passage surligné dans le visualiseur — les passages des autres
+mentions étaient perdus à la fusion, et avec eux les fautes d'OCR propres
+à chaque page.
+
+- **P2 conserve tous les passages** (`filtres_vsm.dedupliquer`) : chaque
+  entrée fusionnée porte `passages` — les extraits sources DISTINCTS de
+  chaque mention, dans l'ordre du document (les formes strictement
+  identiques ne sont gardées qu'une fois : le surlignage les retrouve
+  toutes). Toujours des découpes EXACTES du texte source (garantie
+  anti-hallucination inchangée). Vérifié sur ABRICOT réel : « douleur
+  thoracique » 8 mentions → 4 passages distincts.
+- **Visualiseur multi-surlignages** (`DocumentViewer`) : toutes les
+  occurrences de TOUS les passages sont surlignées (intervalles
+  chevauchants fusionnés — « ulcère » imbriqué dans « ulcère bulbaire »
+  compte une seule mention) ; un sélecteur « Mention k/N » avec boutons
+  Précédent/Suivant fait défiler chaque mention au centre de la vue ; la
+  mention courante est annoncée au lecteur d'écran (aria-live) ; « aucune
+  occurrence trouvée » est signalée honnêtement si un passage a disparu du
+  texte. Entrée à mention unique : comportement inchangé (surlignage +
+  centrage automatique).
+- **Éditeur** : le bouton devient « Voir les N passages sources → » dès
+  qu'il y a plusieurs passages distincts.
+- Tests : 254 verts (P2 étendu : passages distincts, cluster-pont 5 formes,
+  bout-en-bout avec variante OCR).
+
 ## [1.2.4] — 2026-08-24
 
 ### Éditeur VSM : suppression d'une entrée

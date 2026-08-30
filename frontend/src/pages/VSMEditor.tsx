@@ -58,7 +58,7 @@ function NlpInfo({ report }: { report?: NlpReport }) {
 interface Props {
   vsmId: string;
   user: User;
-  onShowSource: (documentId: string, passage: string) => void;
+  onShowSource: (documentId: string, passages: string[]) => void;
 }
 
 export function VSMEditor({ vsmId, user, onShowSource }: Props) {
@@ -310,8 +310,19 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
                           {item.source?.passage && (
                             <button
                               className="text-sarcelle underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle"
-                              onClick={() => onShowSource(item.source!.document_id ?? vsm.document_id ?? "", item.source!.passage!)}>
-                              Voir le passage source →
+                              onClick={() => {
+                                // Toutes les mentions (P2) : les passages
+                                // distincts s'il y en a plusieurs, sinon le
+                                // passage unique — le visualiseur surligne
+                                // puis fait défiler chaque mention.
+                                const passages = item.passages?.length
+                                  ? item.passages
+                                  : [item.source!.passage!];
+                                onShowSource(item.source!.document_id ?? vsm.document_id ?? "", passages);
+                              }}>
+                              {item.passages && item.passages.length > 1
+                                ? `Voir les ${item.passages.length} passages sources →`
+                                : "Voir le passage source →"}
                             </button>
                           )}
                           {item.a_valider && !signed && (

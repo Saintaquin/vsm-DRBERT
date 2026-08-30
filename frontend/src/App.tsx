@@ -12,7 +12,7 @@ import { VSMEditor } from "./pages/VSMEditor";
 type View =
   | { name: "dashboard" }
   | { name: "vsm"; vsmId: string }
-  | { name: "document"; documentId: string; highlight?: string }
+  | { name: "document"; documentId: string; highlights?: string[] }
   | { name: "audit" }
   | { name: "stats" }
   | { name: "settings" };
@@ -128,9 +128,9 @@ export default function App() {
         )}
         {view.name === "vsm" && (
           <VSMEditor vsmId={view.vsmId} user={user}
-            onShowSource={(documentId, passage) => setView({ name: "document", documentId, highlight: passage })} />
+            onShowSource={(documentId, passages) => setView({ name: "document", documentId, highlights: passages })} />
         )}
-        {view.name === "document" && <DocumentViewer documentId={view.documentId} highlight={view.highlight} />}
+        {view.name === "document" && <DocumentViewer documentId={view.documentId} highlights={view.highlights} />}
         {view.name === "audit" && <AuditTrail />}
         {view.name === "stats" && <StatsPage />}
         {view.name === "settings" && <Settings user={user} />}

@@ -154,6 +154,13 @@ def test_p2_fusion_par_forme_et_occurrences():
     assert fusion[0]["valeur"] == "Ulcère bulbaire"  # la plus fréquente
     assert fusion[0]["occurrences"] == 3
     assert fusion[0]["pages"] == [8, 12, 62]
+    # Passages DISTINCTS des mentions, dans l'ordre du document : le
+    # visualiseur surligne puis fait DÉFILER chaque mention. La forme
+    # répétée à l'identique n'est gardée qu'une fois (le surlignage la
+    # retrouve seule dans le texte).
+    assert fusion[0]["passages"] == ["Ulcère bulbaire", "ulcère"]
+    # Le passage du représentant reste inchangé (rétrocompatible).
+    assert fusion[0]["source"]["passage"] == "Ulcère bulbaire"
 
 
 def test_p2_fusion_par_code_desactivee():
@@ -207,6 +214,15 @@ def test_p2_fusion_par_similarite_chaine_ocr():
     assert len(fusion) == 1
     assert fusion[0]["occurrences"] == 5
     assert fusion[0]["pages"] == [8, 22, 30, 40, 55]
+    # Les 5 formes distinctes (fautes d'OCR comprises) restent visibles :
+    # chaque mention a son passage surlignable dans le visualiseur.
+    assert fusion[0]["passages"] == [
+        "Ulcère bulbaire linéaire",
+        "ulcère linéaire",
+        "ulcère bulbaire",
+        "ulcère libéaire",
+        "Ulcèra bulbaire",
+    ]
 
 
 def test_p2_bruit_ocr_direct_absorbe():
@@ -504,7 +520,9 @@ def test_integration_pipeline_p1_a_p7(monkeypatch):
         ENTETE + REMPLISSAGE + "\nUlcère bulbaire décrit ce jour.",
         ENTETE + REMPLISSAGE + "\nANTIBIOGRAMME : souche E. coli, CMI "
                                "pénicilline résistante.",
-        ENTETE + REMPLISSAGE + "\nUlcère bulbaire persistant au contrôle.",
+        # Faute d'OCR volontaire (« ulcére ») : la même pathologie revient
+        # avec le bruit propre à chaque page — le cas réel de P2.
+        ENTETE + REMPLISSAGE + "\nulcére bulbaire persistant au contrôle.",
         ENTETE + REMPLISSAGE + "\nTabagisme actif. OGAST 1 gél/j en "
                                "permanence.",
     ]
@@ -527,7 +545,7 @@ def test_integration_pipeline_p1_a_p7(monkeypatch):
     debut_page3 = texte.index("\n\n", sep1 + 2) + 2
     entites = [
         _ent("problem", "Ulcère bulbaire"),                     # page 1
-        _ent("problem", "Ulcère bulbaire", debut_page3),        # page 3
+        _ent("problem", "ulcére bulbaire", debut_page3),        # page 3
         _ent("treatment", "pénicilline"),                       # page 2
         _ent("problem", "Maladies du Foie"),                    # page 1
         _ent("problem", "Tabagisme actif"),                     # page 4
@@ -570,6 +588,9 @@ def test_integration_pipeline_p1_a_p7(monkeypatch):
     assert pathos[0]["valeur"] == "Ulcère bulbaire"
     assert pathos[0]["occurrences"] == 2
     assert pathos[0]["pages"] == [1, 3]
+    # Les DEUX passages sources traversent la chaîne complète (to_champ →
+    # pipeline → VSM) : « Voir les 2 passages sources » dans l'éditeur.
+    assert pathos[0]["passages"] == ["Ulcère bulbaire", "ulcére bulbaire"]
     # La page de chaque entité est tracée à la source (XAI).
     assert pathos[0]["source"]["page"] == 1
 
