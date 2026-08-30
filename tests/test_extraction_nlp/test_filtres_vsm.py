@@ -763,3 +763,63 @@ def test_code_flou_marque_a_verifier():
     # Un match exact (1,0) n'est jamais marqué.
     exact = normalize_diagnosis("asthme")
     assert exact["confidence"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Règle de spécificité ATC (audit 2026-08-24, recommandation appliquée)
+# ---------------------------------------------------------------------------
+
+
+def test_specificite_refuse_les_qualificatifs_absents():
+    """« insuline » ≠ glargine, « vitamine D » ≠ calcium + vitamine D : le
+    libellé officiel ne doit pas affirmer PLUS que le texte extrait.
+    token_set_ratio rend 100 pour un sous-ensemble — le piège est
+    structurel, la règle le neutralise (aucun code plutôt qu'un code faux)."""
+    from src.extraction_nlp.normalizer import normalize_medication
+
+    assert normalize_medication("insuline")["code_atc"] is None
+    assert normalize_medication("vitamine D")["code_atc"] is None
+    # Le nom COMPLET de la substance garde son code.
+    assert normalize_medication("Insuline glargine")["code_atc"] == "A10AE04"
+    assert normalize_medication("Calcium + vitamine D")["code_atc"] == "A12AX"
+
+
+def test_specificite_alias_et_posologie_passent():
+    """Un terme qui nomme la substance par son ALIAS parenthésé
+    (« Aspirine » pour « Acide acétylsalicylique (Aspirine/Kardégic) ») ou
+    qui la couvre AVEC sa posologie (« Metformine 1000 mg ») garde son
+    code : il nomme le produit, pas son genre."""
+    from src.extraction_nlp.normalizer import normalize_medication
+
+    assert normalize_medication("Aspirine")["code_atc"] == "B01AC06"
+    assert normalize_medication("Aspirine 75 mg par jour")["code_atc"] == "B01AC06"
+    assert normalize_medication("Metformine 1000 mg matin")["code_atc"] == "A10BA02"
+    # « Lévothyroxine sodique » : « sodique » complète le nom canonique
+    # sans le préciser (mot bénin curaté).
+    assert normalize_medication("Lévothyroxine")["code_atc"] == "H03AA01"
+
+
+def test_specificite_remonter_au_parent():
+    """Refus de la feuille → on remonte au parent du référentiel s'il
+    n'apporte pas lui-même de qualificatif absent, sinon rien."""
+    from src.extraction_nlp.normalizer import _remonter_au_parent
+
+    rows = [
+        {"code": "A10AE", "libelle": "Insuline", "dci": "insuline"},
+        {"code": "A10AE04", "libelle": "Insuline glargine", "dci": "insuline glargine"},
+    ]
+    parent = _remonter_au_parent("A10AE04", rows, "insuline")
+    assert parent is not None and parent["code"] == "A10AE"
+    # Parent absent du référentiel → ne rien afficher.
+    assert _remonter_au_parent("A12AX", [], "vitamine D") is None
+
+
+def test_pantoprazole_code_correct():
+    """Entrée ATC corrigée (constat VSM réel ABRICOT) : PANTOPRAZOLE
+    recevait A02BC01 (oméprazole !) par appariement flou — la bonne entrée
+    A02BC02 fait du match un exact, et l'oméprazole reste A02BC01."""
+    from src.extraction_nlp.normalizer import normalize_medication
+
+    assert normalize_medication("PANTOPRAZOLE")["code_atc"] == "A02BC02"
+    assert normalize_medication("Pantoprazole 20 mg")["code_atc"] == "A02BC02"
+    assert normalize_medication("Oméprazole")["code_atc"] == "A02BC01"

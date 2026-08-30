@@ -2,6 +2,42 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.3] — 2026-08-24
+
+### Règle de spécificité ATC + entrée Pantoprazole corrigée
+
+Constat sur le VSM ABRICOT régénéré : « PANTOPRAZOLE [ATC A02BC01] » — le
+code de l'OMÉPRAZOLE. Et application de la recommandation d'audit restante.
+
+- **Entrée Pantoprazole ajoutée au référentiel ATC (A02BC02)** : absente du
+  TSV, la molécule accrochait « Oméprazole » par appariement flou (~0,77 ≥
+  seuil 70 du premier passage). Vérifié sur le document réel : PANTOPRAZOLE
+  → A02BC02 (1,00), OMEPRAZOLE → A02BC01 (1,00).
+- **Règle de spécificité ATC** (`normalizer`) : un libellé officiel portant
+  des qualificatifs absents du terme extrait affirme PLUS que le texte —
+  « insuline » → A10AE04 « Insuline glargine », « vitamine D » → A12AX
+  « Calcium + vitamine D ». Le piège est structurel : token_set_ratio rend
+  100 dès que les jetons du terme forment un sous-ensemble de ceux du
+  libellé. La règle ne déclenque QUE sur ce cas exact (les matches flous
+  < 1,00 — fautes d'OCR — gardent le filet « à vérifier » sous 0,85) :
+  refus de la feuille, remontée au code parent du référentiel s'il existe
+  sans qualificatif absent, sinon aucun code. Les alias parenthésés
+  (« Aspirine » pour « Acide acétylsalicylique (Aspirine/Kardégic) ») et
+  les termes couvrant le nom canonique avec posologie (« Metformine
+  1000 mg ») passent : ils nomment le produit, pas son genre. Mots bénins
+  curatés : « sodique » (« Lévothyroxine sodique » = la lévothyroxine).
+  Périmètre ATC seul : les catégories CIM-10 REGROUPENT (I48 = fibrillation
+  ET flutter auriculaires est le code correct d'une fibrillation seule) ;
+  la règle y refuserait E78.0 « Hypercholestérolémie pure » sans corriger
+  aucun faux — à réévaluer quand le référentiel s'enrichira de codes à
+  point (stades N18.x).
+- **Audit régénéré : 25/25 codes corrects parmi les attribués (100 %),
+  0 faux** — les deux faux ATC (« insuline », « vitamine D ») sont
+  maintenant des absences correctes ; reste le chantier séparé de
+  l'enrichissement des référentiels.
+- Tests : 253 verts (+4 : piège du sous-ensemble, alias/posologie,
+  remontée parent, pantoprazole).
+
 ## [1.2.2] — 2026-08-24
 
 ### Journal des rejets + audit appliqué (seuil CIM-10 78, codes flous « à vérifier »)

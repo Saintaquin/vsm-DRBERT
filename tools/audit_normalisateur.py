@@ -88,6 +88,8 @@ MEDICAMENTS: list[tuple[str, str | None, str]] = [
     ("Atorvastatine 20 mg", "C10AA05", ""),
     ("Aspirine 75 mg par jour", "B01AC06", ""),
     ("Oméprazole 20 mg", "A02BC01", ""),
+    ("Pantoprazole", "A02BC02",
+     "entrée corrigée (constat VSM réel) : le flou l'envoyait sur A02BC01"),
     ("paracétamol", "N02BE01", ""),
     ("ibuprofène", "M01AE01", ""),
     ("furosémide", "C03CA01", ""),
@@ -97,9 +99,9 @@ MEDICAMENTS: list[tuple[str, str | None, str]] = [
     ("sertraline", "N06AB06", ""),
     ("warfarine", "B01AA03", ""),
     ("acide folique", "B03BB01", ""),
-    # --- trop génériques : aucun code acceptable (spécificité trompeuse) ---
-    ("insuline", None, "« insuline » ≠ glargine : trop spécifique"),
-    ("vitamine D", None, "≠ calcium + vitamine D : produit combiné"),
+    # --- trop génériques : aucun code acceptable — RÈGLE DE SPÉCIFICITÉ ---
+    ("insuline", None, "règle de spécificité : glargine non documenté"),
+    ("vitamine D", None, "règle de spécificité : calcium non documenté"),
     # --- hors référentiel : absence attendue ---
     ("OGAST 1 gél/j", None, "nom commercial absent du référentiel"),
     ("MAALOX", None, "nom commercial absent du référentiel"),
@@ -219,13 +221,19 @@ def main() -> int:
             "",
         ]
     )
-    for l in sd["lignes_faux"] + sm["lignes_faux"]:
-        ligne_faux = (
-            f"- **« {l['valeur']} » → {l['attribue']}** "
-            f"({l['libelle']}), confiance {l['confiance']:.2f} — attendu : "
-            f"{l['attendu'] or 'aucun code'}. {l['commentaire']}"
+    if sd["lignes_faux"] + sm["lignes_faux"]:
+        for l in sd["lignes_faux"] + sm["lignes_faux"]:
+            ligne_faux = (
+                f"- **« {l['valeur']} » → {l['attribue']}** "
+                f"({l['libelle']}), confiance {l['confiance']:.2f} — attendu : "
+                f"{l['attendu'] or 'aucun code'}. {l['commentaire']}"
+            )
+            rapport.append(ligne_faux)
+    else:
+        rapport.append(
+            "**Aucun.** Les deux faux CIM-10 sont morts avec le seuil 78,"
+            " les deux faux ATC avec la règle de spécificité."
         )
-        rapport.append(ligne_faux)
     rapport.extend(
         [
             "",
@@ -280,17 +288,30 @@ def main() -> int:
             "  VSM et s'affiche « code à vérifier (appariement flou) » dans",
             "  l'éditeur — le médecin voit l'incertitude, jamais un fait",
             "  établi.",
+            "- **Règle de spécificité ATC** (`normalizer`, recommandation",
+            "  appliquée) : un libellé officiel portant des qualificatifs",
+            "  absents du terme extrait affirme PLUS que le texte (« insuline »",
+            "  → glargine, « vitamine D » → calcium + vitamine D — piège",
+            "  structurel : token_set_ratio rend 100 pour un sous-ensemble).",
+            "  Refus de la feuille, remontée au code parent du référentiel",
+            "  s'il existe, sinon aucun code. Les alias parenthésés",
+            "  (« Aspirine ») et les termes couverts avec posologie",
+            "  (« Metformine 1000 mg ») passent : ils nomment le produit.",
+            "  Périmètre ATC seul — les catégories CIM-10 regroupent (I48 =",
+            "  fibrillation ET flutter), la règle y coûterait plus qu'elle",
+            "  ne rapporte ; à réévaluer avec l'enrichissement (codes N18.x).",
+            "- **Entrée Pantoprazole corrigée** (constat VSM réel ABRICOT) :",
+            "  absente du référentiel, la molécule accrochait « Oméprazole »",
+            "  par appariement flou (~0,77 ≥ seuil 70) → A02BC01 affiché.",
+            "  L'entrée A02BC02 fait du match un exact (1,00).",
             "",
             "## Recommandations restantes (chantier séparé, à planifier)",
             "",
             "1. **Enrichir les référentiels** (quelques centaines d'entrées",
             "   couvrant la médecine générale de ville) : l'absence de code",
-            "   est aujourd'hui le défaut dominant.",
-            "2. **Règle de spécificité ATC** : refuser un match dont le",
-            "   libellé référentiel contient un « + » (produit combiné) ou",
-            "   un nom de spécialité (glargine) quand la demande est",
-            "   générique (« insuline », « vitamine D ») — les 2 faux ATC",
-            "   restants viennent de là, pas du seuil.",
+            "   est aujourd'hui le défaut dominant — et la seule défense des",
+            "   molécules voisines non couvertes contre l'appariement flou",
+            "   (famille des « -prazole » notamment).",
         ]
     )
 
