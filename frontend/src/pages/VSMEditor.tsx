@@ -100,6 +100,22 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
     setDirty(true);
   }, []);
 
+  // Suppression d'une entrée (maladie, traitement…) qui n'a pas sa place :
+  // l'extraction ne sera jamais parfaite, le médecin doit pouvoir écarter
+  // un faux positif — pas seulement corriger sa valeur. L'entrée disparaît
+  // de l'écran immédiatement mais n'est PERSISTÉE qu'à l'enregistrement
+  // (le bouton « Enregistrer • » reste le point de passage obligatoire).
+  const deleteItem = useCallback((section: string, index: number) => {
+    setVsm((prev) => {
+      if (!prev) return prev;
+      const list = prev.sections[section];
+      if (!isList(list)) return prev;
+      const next = list.filter((_, i) => i !== index);
+      return { ...prev, sections: { ...prev.sections, [section]: next } };
+    });
+    setDirty(true);
+  }, []);
+
   async function save(statut: string) {
     if (!vsm) return;
     setBusy(true);
@@ -236,7 +252,7 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
             <CardBody>
               {isList(content) ? (
                 content.length === 0 ? (
-                  <p className="text-sm text-sourdine">Aucun élément extrait — à compléter manuellement si nécessaire.</p>
+                  <p className="text-sm text-sourdine">Aucun élément dans cette rubrique.</p>
                 ) : (
                   <ul className="space-y-2">
                     {content.map((item, i) => (
@@ -252,6 +268,20 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
                             className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 py-0.5 text-sm text-encre hover:border-trait focus-visible:border-sarcelle focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle disabled:opacity-70"
                           />
                           <ConfianceBadge confiance={item.confiance} aValider={item.a_valider} />
+                          {!signed && (
+                            <button
+                              className="shrink-0 rounded border border-transparent px-2 py-0.5 text-xs font-semibold text-alerte hover:border-alerte hover:bg-[#FBEAEB] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle"
+                              aria-label={`Supprimer « ${item.valeur} » de ${label}`}
+                              title="Supprimer cette entrée (persisté à l'enregistrement)"
+                              onClick={() => {
+                                if (!window.confirm(`Supprimer « ${item.valeur} » de « ${label} » ?\n\nLa suppression ne sera persistée qu'au moment d'enregistrer.`)) return;
+                                deleteItem(key, i);
+                                announce(`« ${item.valeur} » supprimé de ${label} — enregistrez pour rendre la suppression définitive.`);
+                              }}
+                            >
+                              Supprimer
+                            </button>
+                          )}
                         </div>
                         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-sourdine">
                           {item.code_normalise && (

@@ -2,6 +2,28 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.4] — 2026-08-24
+
+### Éditeur VSM : suppression d'une entrée
+
+L'éditeur ne permettait que de CORRIGER les champs — impossible d'écarter
+un faux positif de l'extraction (pathologie, traitement… qui n'a pas sa
+place). Expérience utilisateur handicapante pour la relecture médicale.
+
+- **Bouton « Supprimer » sur chaque entrée** des rubriques en liste
+  (pathologies, antécédents, allergies, traitements, facteurs de risque,
+  vaccinations, points de vigilance) : confirmation explicite avec la
+  valeur de l'entrée, disparition immédiate, restitution au lecteur
+  d'écran. Masqué sur un VSM signé (scellé = non modifiable).
+- **La suppression n'est persistée qu'à l'enregistrement** (« Enregistrer
+  • » reste le point de passage obligatoire) : une suppression accidentelle
+  se rattrape en rechargeant la page tant qu'on n'a pas enregistré.
+- Backend inchangé et testé : `/validate` remplace chaque rubrique par la
+  liste envoyée (`update` par clé) — la persistance de la suppression est
+  verrouillée par un test de non-régression (liste amputée persistée au
+  rechargement, dernière entrée supprimée → rubrique vide valide).
+- Tests : 254 verts (+1).
+
 ## [1.2.3] — 2026-08-24
 
 ### Règle de spécificité ATC + entrée Pantoprazole corrigée

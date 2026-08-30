@@ -673,3 +673,94 @@ def test_llm_assist_requires_model(client, monkeypatch):
     r = client.post(f"/vsm/{vsm_id}/llm-assist", headers=headers)
     assert r.status_code == 409
     assert "python -m" in r.json()["detail"]
+
+
+def test_validate_persiste_la_suppression_d_entree(client):
+    """Suppression d'une entrée dans l'éditeur (« Supprimer ») : le frontend
+    renvoie la liste AMPUTÉE — le point de terminaison /validate doit la
+    PERSISTER telle quelle (update par rubrique), pas la fusionner avec
+    l'existant. L'extraction ne sera jamais parfaite : écarter un faux
+    positif est une correction médicale à part entière."""
+    headers = _login(client)
+    import src.ui_backend.main as m
+
+    sess = m._sessions[client.cookies.get("vsm_session")]
+    # Semis conforme au schéma (provenance.documents_sources requis par
+    # jsonschema, exécuté par /validate).
+    vsm_id = "vsm_suppression"
+    store = sess["store"]
+    store.store_vsm(
+        vsm_id,
+        "doc_suppression",
+        {
+            "schema_version": "1.1.0",
+            "document_id": "doc_suppression",
+            "date_generation": "2026-08-01T10:00:00+00:00",
+            "statut": "a_valider",
+            "patient": {},
+            "medecin_traitant": {},
+            "sections": {
+                "pathologies_actives": [],
+                "antecedents": [
+                    {
+                        "valeur": "Diabete de type 2",
+                        "confiance": 0.6,
+                        "a_valider": True,
+                        "source": {"passage": "Diabete de type 2"},
+                    },
+                    {
+                        "valeur": "Hypertension",
+                        "confiance": 0.95,
+                        "a_valider": False,
+                        "source": {"passage": "Hypertension"},
+                    },
+                ],
+                "allergies": [],
+                "traitements_long_cours": [],
+                "facteurs_risque": [],
+                "vaccinations": [],
+                "points_vigilance": [],
+            },
+            "provenance": {
+                "documents_sources": [
+                    {"document_id": "doc_suppression", "sha256": "0" * 64}
+                ]
+            },
+        },
+    )
+    vsm = store.load_vsm(vsm_id)
+    antecedents = vsm["sections"]["antecedents"]
+    assert [c["valeur"] for c in antecedents] == [
+        "Diabete de type 2",
+        "Hypertension",
+    ]
+
+    # Le médecin supprime « Hypertension » (faux positif) : la liste
+    # envoyée ne contient plus que le premier élément.
+    restants = [dict(antecedents[0])]
+    r = client.post(
+        f"/vsm/{vsm_id}/validate",
+        headers=headers,
+        json={"statut": "valide", "sections": {"antecedents": restants}},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert [c["valeur"] for c in body["sections"]["antecedents"]] == [
+        "Diabete de type 2"
+    ]
+
+    # Persisté au rechargement (le store est la source de vérité).
+    relu = client.get(f"/vsm/{vsm_id}", headers=headers).json()
+    valeurs = [c["valeur"] for c in relu["sections"]["antecedents"]]
+    assert valeurs == ["Diabete de type 2"]
+    assert "Hypertension" not in valeurs
+
+    # Supprimer la DERNIÈRE entrée d'une rubrique : liste vide valide (le
+    # schéma n'impose pas de minimum) — la rubrique existe toujours.
+    r2 = client.post(
+        f"/vsm/{vsm_id}/validate",
+        headers=headers,
+        json={"statut": "valide", "sections": {"antecedents": []}},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["sections"]["antecedents"] == []
