@@ -2,6 +2,30 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.7] — 2026-08-30
+
+### Statistiques : plus aucun champ qui déborde
+
+Constat : la page Statistiques empilait sur une même ligne SVG libellé,
+barre, compteur et code dans un viewBox fixe 520 — un libellé long
+recouvrait sa barre, le compteur et le code se chevauchaient sur les barres
+pleines, et l'écran étroit réduisait le tout (texte minuscule). Les cartes
+« VSM par statut » / « Périodes » tenaient tout sur une ligne jointe par
+« · » (débordement), et un libellé de rubrique long poussait le pourcentage
+hors de sa carte.
+
+- **Graphique refondu en rangées empilées** : une rangée = libellé (tronqué
+  avec « … ») + code sur une ligne, barre + compteur sur la ligne suivante —
+  aucun chevauchement possible, quelle que soit la longueur du libellé.
+- **Largeur adaptative** (ResizeObserver, aucun CDN) : le graphique suit la
+  largeur réelle de son conteneur, la police reste lisible sur petit écran
+  comme en colonne double.
+- **Statuts et périodes en mini-lignes repliables** (`flex-wrap`) : chaque
+  « clé : valeur » passe à la ligne au lieu de déborder.
+- **Complétude** : libellé tronqué (`min-w-0 truncate`) + pourcentage en
+  `whitespace-nowrap` — plus rien ne sort de la carte.
+- TypeScript et build propres ; aucun changement de contrat d'API.
+
 ## [1.2.6] — 2026-08-30
 
 ### Audit DRAGON v7 (C1-C5) : codes sûrs, actes reclassés, fragments rejetés
