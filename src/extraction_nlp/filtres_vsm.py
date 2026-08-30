@@ -288,15 +288,41 @@ def entites_hors_pages_rejetees(entites: list, carte: list[dict]) -> list:
 # Mots pleins (recherchés comme sous-chaînes de la forme normalisée) et
 # suffixes (« -ectomie » attrape cholécystectomie, thyroidectomie…). En
 # sous-chaîne (et non endswith) : « cholécystectomie rétrograde » doit être
-# reconnue elle aussi.
+# reconnue elle aussi. Complété par l'audit DRAGON v7 (C3) : cardiologie
+# interventionnelle, chirurgie tendineuse, anatomopathologie.
 _ACTES_MOTS = (
     "excision", "exerese", "resection", "curetage", "cure de", "osteosynthese",
     "suture", "drainage", "drain ", "reduction", "immobilisation", "attelle",
     "platre", "reeducation", "kinesitherapie", "infiltration", "anesthesie",
     "intervention", "geste chirurgical", "lavage", "ablation", "biopsie",
     "ponction", "pose de", "pose d'",
+    # C3/DRAGON : chirurgie cardiaque et vasculaire (« PLASTIE MITRALE »,
+    # « annulopiastie » et « Piicature » sont les fautes d'OCR réelles du
+    # dossier — suffixes tolérants dédiés « iastie »/« icature »).
+    "annuloplastie", "plicature", "icature", "cardioplegie", "reperfusion",
+    "circulation extracorporelle", "clampage", "hemostase", "sternotomie",
+    "auriculotomie", "valvuloplastie",
+    # C3/DRAGON : orthopédie et contention (« botte cheville »,
+    # « ligament TENOLIG », « treillis de vicryl »).
+    "ligamentoplastie", "contention", "botte", "treillis", "prothese",
+    "orthese", "tenolig",
 )
-_ACTES_SUFFIXES = ("ectomie", "otomie", "oplastie", "oscopie", "orraphie")
+_ACTES_SUFFIXES = (
+    "ectomie", "otomie", "oplastie", "oscopie", "orraphie",
+    # C3/DRAGON : plastie, lithotripsie, pexie, stomie, centèse, désis —
+    # et « -iastie » (annulopiastie, faute d'OCR mesurée de -plastie).
+    "plastie", "tripsie", "pexie", "stomie", "centese", "desis", "iastie",
+)
+# Abréviations trop courtes pour la sous-chaîne (« cec » matcherait
+# « cécité ») : seules les formes longues sont retenues.
+
+# C3/DRAGON : supports thérapeutiques — ni médicaments au long cours, ni
+# antécédents chirurgicaux (avis d'audit v7 : les router en points de
+# vigilance, rubrique alors vide sur ce dossier). « dialyse » et
+# « épuration » suivent la même route (soins, pas des actes posés).
+_SUPPORTS_MOTS = (
+    "transfusion", "oxygenotherapie", "inotrope", "dialyse", "epuration",
+)
 
 
 def est_un_acte(valeur: str) -> bool:
@@ -307,6 +333,14 @@ def est_un_acte(valeur: str) -> bool:
     if any(suf in bas for suf in _ACTES_SUFFIXES):
         return True
     return any(mot in bas for mot in _ACTES_MOTS)
+
+
+def est_un_support_therapeutique(valeur: str) -> bool:
+    """Support de soins (P3, C3/DRAGON) : transfusion, oxygénothérapie,
+    support inotrope, dialyse, épuration — à router en points de
+    vigilance, pas dans les traitements au long cours."""
+    bas = normaliser(valeur)
+    return bool(bas) and any(mot in bas for mot in _SUPPORTS_MOTS)
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +505,42 @@ def _lateralement_distinct(a: str, b: str) -> bool:
     return bool(la) and bool(lb) and la != lb
 
 
+# Jetons significatifs pour la couverture floue (C5/DRAGON v7) : mots vides
+# retirés — « Rupture tendon d'Achilie » doit pouvoir couvrir « rupture
+# tendon Achille droit » (le « d' » élidé ne doit rien coûter).
+_MOTS_VIDES_JETONS = {
+    "a", "au", "aux", "d", "de", "des", "du", "et", "en", "l", "la", "le",
+    "les", "ou", "par", "pour", "avec", "sans", "sur", "dans", "un", "une",
+}
+
+
+def _jetons(valeur: str) -> list[str]:
+    """Jetons significatifs (≥ 2 car., mots vides retirés) d'une forme."""
+    return [
+        t
+        for t in re.split(r"[^a-z0-9]+", valeur)
+        if len(t) >= 2 and t not in _MOTS_VIDES_JETONS
+    ]
+
+
+def _jetons_couverts(court: str, long_: str) -> bool:
+    """Tous les jetons significatifs du côté COURT existent (ratio ≥ 85)
+    dans l'autre côté (C5/DRAGON v7).
+
+    Mesuré sur le dossier réel : « Achilie » couvre « Achille » (85,7),
+    « Rupture tendon d'Achilie » couvre « rupture tendon Achille droit »,
+    « rupture-dilacération complète du tendon d'Achille » couvre
+    « Rupture tendon d'Achilie » — 6 paires utiles fusionnées, AUCUN faux
+    positif sur les négatifs (kyste hépatique/urétral, rénal/coronaire,
+    fuites/incontinence : leurs jetons distincts ne se couvrent pas)."""
+    from rapidfuzz import fuzz
+
+    jc, jl = _jetons(court), _jetons(long_)
+    if not jc or not jl:
+        return False
+    return all(any(fuzz.ratio(t, u) >= 85 for u in jl) for t in jc)
+
+
 def _fusionnables(a: str, b: str) -> bool:
     """Deux formes normalisées fusionnables par similarité (P2, passe 3) ?"""
     if not a or not b:
@@ -479,14 +549,28 @@ def _fusionnables(a: str, b: str) -> bool:
         return False  # latéralités différentes : cliniquement distinct
     from rapidfuzz import fuzz
 
-    return fuzz.token_set_ratio(a, b) >= SEUIL_SIMILARITE
+    if fuzz.token_set_ratio(a, b) >= SEUIL_SIMILARITE:
+        return True
+    # C5/DRAGON v7 : les fautes d'OCR DANS un jeton (« Achilie » ≠ « Achille »)
+    # font échouer l'égalité exacte de jetons — couverture floue
+    # directionnelle (le côté court doit être entièrement couvert).
+    return _jetons_couverts(a, b) or _jetons_couverts(b, a)
+
+
+def _sans_lateralite(forme: str) -> str:
+    """Forme sans ses jetons de latéralité (C5b : comparaison de côtés)."""
+    return " ".join(t for t in forme.split() if t not in _LATERALITE)
 
 
 def dedupliquer(champs: list[dict]) -> list[dict]:
     """Fusionne les entités d'une MÊME rubrique (P2) — 2 passes TEXTE.
 
     Passe 1 : même forme normalisée (accents/casse/espaces).
-    Passe 2 : similarité ≥ 88 (fautes d'OCR), latéralité différente bloquée.
+    Passe 2 : similarité ≥ 88 (fautes d'OCR) OU couverture floue de jetons
+    (C5/DRAGON v7 : « Achilie » couvre « Achille » à 85,7), latéralité
+    différente bloquée — AU NIVEAU DU CLUSTER : un pont non latéralisé
+    (« hernie inguinale ») ne doit jamais relier « ... droite » et
+    « ... gauche » (bug de pont mesuré puis corrigé).
 
     La passe par CODE normalisé (CIM-10/ATC) est DÉSACTIVÉE : l'audit du
     normalisateur (``outputs/AUDIT_NORMALISATEUR.md``, 2026-08-24) mesure
@@ -515,6 +599,11 @@ def dedupliquer(champs: list[dict]) -> list[dict]:
     visualiseur — un seul extrait cachait les fautes d'OCR propres à chaque
     page. Les passages restent des découpes EXACTES du texte source
     (garantie anti-hallucination inchangée).
+
+    Une entrée dont la pathologie apparaît avec DEUX latéralités opposées
+    dans la rubrique porte ``lateralite_divergente`` (C5b) : une atteinte
+    bilatérale est cliniquement notable — l'éditeur l'affiche « latéralité
+    divergente — à confirmer ».
     """
     clusters: list[dict] = []  # {formes: {forme: [champ...]}, membres: [...]}
 
@@ -525,6 +614,26 @@ def dedupliquer(champs: list[dict]) -> list[dict]:
                 cible["formes"].setdefault(forme, []).extend(ms)
             cible["membres"].extend(autre["membres"])
             clusters.remove(autre)
+
+    def _conflit_lateral_avec_cluster(champ: dict, cluster: dict) -> bool:
+        """C5/DRAGON v7 : la nouvelle entité conflite-t-elle en latéralité
+        avec un MEMBRE QUELCONQUE du cluster ? Le test par paires ne
+        suffit pas : « hernie inguinale » (sans côté) reliait « ... droite »
+        et « ... gauche » en une seule entrée (mesuré — bug de pont)."""
+        f_champ = normaliser(champ.get("valeur", ""))
+        return any(
+            _lateralement_distinct(f_champ, normaliser(m.get("valeur", "")))
+            for m in cluster["membres"]
+        )
+
+    def _clusters_lateralement_distincts(c1: dict, c2: dict) -> bool:
+        return any(
+            _lateralement_distinct(
+                normaliser(m1.get("valeur", "")), normaliser(m2.get("valeur", ""))
+            )
+            for m1 in c1["membres"]
+            for m2 in c2["membres"]
+        )
 
     for champ in champs:
         forme = normaliser(champ.get("valeur", ""))
@@ -541,6 +650,16 @@ def dedupliquer(champs: list[dict]) -> list[dict]:
                 for c in clusters
                 if any(_fusionnables(forme, f) for f in c["formes"] if f)
             ]
+        # C5 : garde-fou latéralité AU NIVEAU DU CLUSTER — un pont non
+        # latéralisé ne doit jamais relier droit et gauche.
+        cibles = [c for c in cibles if not _conflit_lateral_avec_cluster(champ, c)]
+        if len(cibles) > 1:
+            retenues: list[dict] = []
+            for c in cibles:
+                if any(_clusters_lateralement_distincts(c, r) for r in retenues):
+                    continue
+                retenues.append(c)
+            cibles = retenues
         if not cibles:
             clusters.append({"formes": {forme: [champ]}, "membres": [champ]})
         else:
@@ -550,8 +669,27 @@ def dedupliquer(champs: list[dict]) -> list[dict]:
             if len(cibles) > 1:
                 _fusionner(cible, cibles[1:])
 
+    # C5b : deux clusters de la même rubrique, pathologie IDENTIQUE une
+    # fois la latéralité retirée, côtés OPPOSÉS → latéralité divergente.
+    # Une atteinte bilatérale est cliniquement notable (deux accidents
+    # distincts ou erreur d'extraction) : le médecin doit le VOIR au lieu
+    # de la chercher parmi 130 lignes.
+    divergents: set[int] = set()
+    for i, ci in enumerate(clusters):
+        for j in range(i + 1, len(clusters)):
+            cj = clusters[j]
+            if not _clusters_lateralement_distincts(ci, cj):
+                continue
+            if any(
+                _fusionnables(_sans_lateralite(fi), _sans_lateralite(fj))
+                for fi in ci["formes"]
+                for fj in cj["formes"]
+                if fi and fj
+            ):
+                divergents.update({i, j})
+
     sortie: list[dict] = []
-    for c in clusters:
+    for indice, c in enumerate(clusters):
         membres = c["membres"]
         if len(membres) == 1:
             rep = membres[0]
@@ -569,6 +707,8 @@ def dedupliquer(champs: list[dict]) -> list[dict]:
                 ),
             )
         nouveau = dict(rep)
+        if indice in divergents:
+            nouveau["lateralite_divergente"] = True
         if len(membres) > 1:
             nouveau["occurrences"] = len(membres)
             pages = sorted(

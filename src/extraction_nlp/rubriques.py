@@ -45,7 +45,12 @@ from __future__ import annotations
 import re
 
 from .drbert_extractor import Entite
-from .filtres_vsm import TITRES_RX, est_facteur_risque, est_un_acte
+from .filtres_vsm import (
+    TITRES_RX,
+    est_facteur_risque,
+    est_un_acte,
+    est_un_support_therapeutique,
+)
 
 # Fenêtre de contexte AVANT l'entité (caractères) — décision de l'étape 2.
 CONTEXTE_AVANT = 120
@@ -98,6 +103,12 @@ def rubrique_de(
             return "allergies"
         if _RX_VACCIN.search(bas):
             return "vaccinations"
+        # P3/C3 (DRAGON v7) : les SUPPORTS thérapeutiques (transfusion,
+        # oxygénothérapie, support inotrope, dialyse, épuration) ne sont
+        # ni des médicaments au long cours ni des antécédents chirurgicaux
+        # — points de vigilance.
+        if entite and est_un_support_therapeutique(entite):
+            return "points_vigilance"
         # P3 : CASM2 étiquette les actes chirurgicaux « treatment » (exact
         # de son point de vue) — c'est ici qu'on les envoie aux antécédents :
         # « excision du pertuis cutané » n'est pas un traitement en cours.

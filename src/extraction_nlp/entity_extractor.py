@@ -88,6 +88,21 @@ _RX_ENTETE_SEULE = re.compile(
     re.IGNORECASE,
 )
 
+# Fragments TRONQUÉS (C4/DRAGON v7) : une valeur qui COMMENCE par une
+# préposition ou un article contracté (« de résistance », « du murmure
+# vésiculaire ») ou qui FINIT par un mot-outil (« Résection de la ») est
+# une découpe ratée — l'entité commence avant ou continue après. Variante
+# apostrophe en tête (« d'infarctus ») : pas d'espace après l'apostrophe.
+_RX_DEBUT_TRONQUE = re.compile(
+    r"^(?:de|du|des|la|le|les|au|aux|à|et|ou|un|une|par|pour|sur|dans)\s"
+    r"|^(?:d|l)'",
+    re.IGNORECASE,
+)
+_RX_FIN_TRONQUEE = re.compile(
+    r"\s(?:de|du|des|d'|la|le|les|l'|et|ou|à|sans|avec|par|pour|sur|dans)$",
+    re.IGNORECASE,
+)
+
 _NEG_ALLERGY = re.compile(
     r"aucune?\s+allergie|pas\s+d'?allergie|sans\s+allergie", re.IGNORECASE
 )
@@ -819,6 +834,18 @@ def _valider_raison(
         return None, ("validateur_fragments", detail)
     if bas in ("(s)", "s", "familiaux", "aucun", "aucune", "1 docteur"):
         return None, ("validateur_fragments", f"libellé vide de sens « {bas} »")
+    #    Fragments TRONQUÉS (C4/DRAGON v7) : préposition ou article en
+    #    tête, mot-outil en fin — la découpe a raté les vraies bornes.
+    if _RX_DEBUT_TRONQUE.search(valeur):
+        return None, (
+            "validateur_fragment_tronque",
+            "la valeur COMMENCE par un mot-outil (découpe tronquée)",
+        )
+    if _RX_FIN_TRONQUEE.search(valeur):
+        return None, (
+            "validateur_fragment_tronque",
+            "la valeur FINIT par un mot-outil (découpe tronquée)",
+        )
 
     # 6. Règles propres aux traitements.
     if rubrique == "traitements_long_cours":

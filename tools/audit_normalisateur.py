@@ -1,15 +1,15 @@
-"""Audit du normalisateur CIM-10/ATC sur un échantillon (2026-08-24).
+"""Audit du normalisateur CIM-10/ATC sur un échantillon (2026-08-24, v7 2026-08-30).
 
 Question posée : « combien de codes attribués sont corrects ? Un code faux
 affiché dans un VSM est un problème même sans déduplication. »
 
 Méthode : un échantillon d'entités réalistes (issues de l'analyse des
-dossiers ABRICOT/BANANE et des cas synthétiques) est passé au normalisateur
-(``src/extraction_nlp/normalizer.py`` : match exact puis flou rapidfuzz sur
-les référentiels locaux, seuils 78/70-78 — le seuil CIM-10 a été relevé de
-72 à 78 après la première passe d'audit, voir « Décisions prises »). Chaque
-code attribué est comparé au code attendu — établi manuellement, vérifiable
-par un médecin du jury. Trois verdicts :
+dossiers ABRICOT/BANANE/DRAGON et des cas synthétiques) est passé au
+normalisateur (``src/extraction_nlp/normalizer.py`` : match exact puis flou
+rapidfuzz sur les référentiels locaux, seuils CIM-10 78 / ATC 95 + règle de
+spécificité sur les DEUX systèmes — v7/C1-C2). Chaque code attribué est
+comparé au code attendu — établi manuellement, vérifiable par un médecin du
+jury. Trois verdicts :
 
 - CORRECT  : code attribué = code attendu (ou classe mère, p. ex. A10AE04
              accepté si A10AE attendu) ;
@@ -53,10 +53,21 @@ DIAGNOSTICS: list[tuple[str, str | None, str]] = [
     ("obésité", "E66", ""),
     ("fibrillation auriculaire", "I48", ""),
     ("insuffisance cardiaque", "I50", ""),
-    ("hypercholestérolémie", "E78", ""),
+    ("hypercholestérolémie", None, (
+        "C2/DRAGON v7 : E78.0 « Hypercholestérolémie PURE » — « pure » "
+        "n'est pas documenté, le parent E78 n'est pas au référentiel")),
     ("asthme", "J45", ""),
     ("épilepsie", "G40", ""),
     ("gastrite chronique", "K29", "attendu : K29 (absent du référentiel)"),
+    # --- C2/DRAGON v7 : sur-spécificité refusée, aucun code ---
+    ("diabète", None,
+     "C2/DRAGON v7 : E11 « de type 2 » affirme plus que « diabète » nu"),
+    ("cardiopathie", None,
+     "C2/DRAGON v7 : I25 « ischémique chronique » non documenté"),
+    ("tumeur", None,
+     "C2/ABRICOT : C50/C61/C18 « maligne du/de la… » non documenté"),
+    ("anémie", None,
+     "C2/ABRICOT : D50 « par carence en fer » non documenté"),
     # --- collision constatée dans les VSM réels (déclencheur de l'audit) ---
     ("maladie coronaire", "I25", "constat ABRICOT/BANANE : N18 attribué"),
     ("maladie de Basedow", "E05", "constat d'audit : G20 attribué"),
@@ -102,6 +113,15 @@ MEDICAMENTS: list[tuple[str, str | None, str]] = [
     # --- trop génériques : aucun code acceptable — RÈGLE DE SPÉCIFICITÉ ---
     ("insuline", None, "règle de spécificité : glargine non documenté"),
     ("vitamine D", None, "règle de spécificité : calcium non documenté"),
+    ("salmétérol", None, "règle de spécificité : fluticasone non documenté"),
+    # --- C1/DRAGON v7 : ressemblance graphique ≠ identification ---
+    ("SPIRAMYCINE", None, (
+        "C1/DRAGON v7 : B01AC06 (ASPIRINE !) attribué par flou — un code "
+        "faux sur un antibiotique est un risque clinique direct")),
+    ("GENTALLINE", None,
+     "C1/DRAGON v7 : N06AB06 (sertraline) attribué par flou"),
+    ("Ofloxacine", None,
+     "C1/DRAGON v7 : N06AB03 (fluoxétine) attribué par flou"),
     # --- hors référentiel : absence attendue ---
     ("OGAST 1 gél/j", None, "nom commercial absent du référentiel"),
     ("MAALOX", None, "nom commercial absent du référentiel"),
@@ -190,7 +210,10 @@ def main() -> int:
         [
             "# Audit du normalisateur CIM-10 / ATC",
             "",
-            "Date : 2026-08-24 · Régénérable : `py -3.12 tools/audit_normalisateur.py`",
+            (
+                "Date : 2026-08-30 (v7, dossier DRAGON) · Régénérable : "
+                "`py -3.12 tools/audit_normalisateur.py`"
+            ),
             "",
             "Question posée : **« combien de codes attribués sont corrects ? »**",
             "(un code faux affiché dans un VSM est un problème même sans",
@@ -231,8 +254,9 @@ def main() -> int:
             rapport.append(ligne_faux)
     else:
         rapport.append(
-            "**Aucun.** Les deux faux CIM-10 sont morts avec le seuil 78,"
-            " les deux faux ATC avec la règle de spécificité."
+            "**Aucun.** Les faux CIM-10 sont morts avec le seuil 78 puis la"
+            " règle de spécificité C2, les faux ATC avec la règle de"
+            " spécificité puis le seuil 95 (C1)."
         )
     rapport.extend(
         [
@@ -288,18 +312,38 @@ def main() -> int:
             "  VSM et s'affiche « code à vérifier (appariement flou) » dans",
             "  l'éditeur — le médecin voit l'incertitude, jamais un fait",
             "  établi.",
-            "- **Règle de spécificité ATC** (`normalizer`, recommandation",
-            "  appliquée) : un libellé officiel portant des qualificatifs",
-            "  absents du terme extrait affirme PLUS que le texte (« insuline »",
-            "  → glargine, « vitamine D » → calcium + vitamine D — piège",
-            "  structurel : token_set_ratio rend 100 pour un sous-ensemble).",
-            "  Refus de la feuille, remontée au code parent du référentiel",
-            "  s'il existe, sinon aucun code. Les alias parenthésés",
-            "  (« Aspirine ») et les termes couverts avec posologie",
-            "  (« Metformine 1000 mg ») passent : ils nomment le produit.",
-            "  Périmètre ATC seul — les catégories CIM-10 regroupent (I48 =",
-            "  fibrillation ET flutter), la règle y coûterait plus qu'elle",
-            "  ne rapporte ; à réévaluer avec l'enrichissement (codes N18.x).",
+            "- **Seuil ATC porté à 0,95 (C1/DRAGON v7)** : un nom de molécule",
+            "  est un IDENTIFIANT, pas une expression. Aux anciens seuils",
+            "  (70/78), « SPIRAMYCINE » recevait B01AC06 (aspirine),",
+            "  « GENTALLINE » N06AB06 (sertraline), « ofloxacine » N06AB03",
+            "  (fluoxétine) par pure ressemblance graphique — risque",
+            "  clinique direct (décision d'anticoagulation). En dessous de",
+            "  0,95, AUCUN code : les appariements légitimes (exact ou",
+            "  posologie accolée) sont des sur-ensembles à 1,00.",
+            (
+                "- **Règle de spécificité étendue aux DEUX systèmes "
+                "(C2/DRAGON v7)** : un libellé officiel portant des "
+                "qualificatifs absents du terme extrait affirme PLUS que le "
+                "texte (« insuline » → glargine, « diabète » → E11 "
+                "« de type 2 », « tumeur » → C50 « du sein »). Déclenchement "
+                "abaissé à 0,90 (le piège du sous-ensemble ne rend pas "
+                "toujours 100). Exceptions : les qualificatifs de "
+                "coordination/imprécision (le code REGROUPE — I48 "
+                "« Fibrillation ET flutter » reste le code d'une fibrillation "
+                "isolée), les complétions canoniques (« sucré », « aigu », "
+                "« autre »), les négations finales (« sans précision ») et "
+                "les alias parenthésés (« Aspirine »). Refus de la feuille, "
+                "remontée au parent du référentiel s'il existe, sinon aucun "
+                "code."
+            ),
+            (
+                "- **Ponctuation des libellés découpée** (bug latent trouvé "
+                "en mesurant C2) : `token_set_ratio` découpe sur les espaces "
+                "seuls — « allergie » ne matchait JAMAIS « Allergie, sans "
+                "précision », « BPCO » jamais « (BPCO) », et « AVC "
+                "ischémique » ratait I63 pour tomber sur I25 à 0,83. Un "
+                "processeur découpe désormais la ponctuation."
+            ),
             "- **Entrée Pantoprazole corrigée** (constat VSM réel ABRICOT) :",
             "  absente du référentiel, la molécule accrochait « Oméprazole »",
             "  par appariement flou (~0,77 ≥ seuil 70) → A02BC01 affiché.",

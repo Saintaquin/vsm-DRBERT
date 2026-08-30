@@ -53,6 +53,10 @@ export interface ChampTrace {
    *  l'ordre du document : « Voir les N passages sources » les surligne
    *  TOUTES dans le visualiseur — un seul extrait cachait les autres. */
   passages?: string[];
+  /** C5 (DRAGON v7) : la même pathologie apparaît avec deux latéralités
+   *  opposées dans la rubrique — atteinte bilatérale notable (deux
+   *  accidents distincts ou erreur d'extraction) : à confirmer. */
+  lateralite_divergente?: boolean;
 }
 /** Rapport de la phase NLP (XAI) — rempli par le backend : moteur réel
  *  (DrBERT-CASM2 par défaut, règles en repli, LLM sur demande). */

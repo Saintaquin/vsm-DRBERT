@@ -302,6 +302,11 @@ export function VSMEditor({ vsmId, user, onShowSource }: Props) {
                                 : ""}
                             </span>
                           )}
+                          {item.lateralite_divergente && (
+                            <span className="font-semibold text-ambre">
+                              ⚠ latéralité divergente — à confirmer
+                            </span>
+                          )}
                           {item.correction_ocr && (
                             <span className="font-medium text-sarcelle">valeur corrigée</span>
                           )}

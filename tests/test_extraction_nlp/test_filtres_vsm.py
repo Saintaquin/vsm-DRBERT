@@ -267,6 +267,74 @@ def test_p2_lateralite_differentes_jamais_fusionnees():
     assert not _fusionnables("hernie bilaterale", "hernie droite")
 
 
+def test_c5_pont_non_lateralise_ne_relie_pas_les_cotes():
+    """C5 (DRAGON v7) — régression mesurée sur le code d'avant : « hernie
+    inguinale » (sans côté, sous-ensemble à 100 des deux formes latéra-
+    lisées) reliait « ... droite » et « ... gauche » en UNE entrée — le
+    garde-fou par paires ne voyait pas le conflit À TRAVERS le pont. Le
+    garde-fou s'applique désormais au NIVEAU DU CLUSTER."""
+    champs = [
+        _champ("hernie inguinale droite", page=5),
+        _champ("hernie inguinale gauche", page=12),
+        _champ("hernie inguinale", page=30),
+    ]
+    fusion = dedupliquer(champs)
+    assert len(fusion) == 2
+    valeurs = {c["valeur"] for c in fusion}
+    assert "hernie inguinale droite" in valeurs
+    assert "hernie inguinale gauche" in valeurs
+
+
+def test_c5_dedup_achille_ocr_et_familles_laterales():
+    """C5 (DRAGON v7) : les 4 formes de rupture du tendon d'Achille (dont la
+    faute d'OCR « Achilie » et la forme longue « rupture-dilacération
+    complète ») fusionnent par FAMILLE de latéralité — 2 entrées (droit,
+    gauche), jamais une seule."""
+    champs = [
+        _champ("rupture tendon Achille droit", page=5),
+        _champ("Rupture tendon d'Achilie", page=12),
+        _champ("rupture traumatique du tendon d'Achille gauche", page=30),
+        _champ("rupture-dilacération complète du tendon d'Achille", page=44),
+    ]
+    fusion = dedupliquer(champs)
+    assert len(fusion) == 2
+    droits = [c for c in fusion if "droit" in c["valeur"]]
+    gauches = [c for c in fusion if "gauche" in c["valeur"]]
+    assert len(droits) == 1 and len(gauches) == 1
+    # La famille droite absorbe la faute d'OCR et la forme longue :
+    # 3 mentions, pages 5, 12 et 44 — les passages suivent.
+    assert droits[0]["occurrences"] == 3
+    assert droits[0]["pages"] == [5, 12, 44]
+    assert len(droits[0]["passages"]) == 3
+
+
+def test_c5_lateralite_divergente_signalee():
+    """C5b (DRAGON v7) : deux kystes ovariens de côtés opposés — non
+    fusionnés (invariant existant) et désormais SIGNALÉS : une atteinte
+    bilatérale est cliniquement notable (deux accidents distincts ou
+    erreur d'extraction), le médecin doit le voir."""
+    champs = [
+        _champ("kyste de l'ovaire droit", page=5),
+        _champ("kyste de l'ovaire gauche", page=30),
+    ]
+    fusion = dedupliquer(champs)
+    assert len(fusion) == 2
+    assert all(c.get("lateralite_divergente") is True for c in fusion)
+
+
+def test_c5_localisations_differentes_non_signalees():
+    """« adénopathie axillaire droite » vs « adénopathie inguinale gauche » :
+    deux LOCALISATIONS différentes (pas la même pathologie) — pas de
+    signal de latéralité divergente."""
+    champs = [
+        _champ("adénopathie axillaire droite", page=5),
+        _champ("adénopathie inguinale gauche", page=30),
+    ]
+    fusion = dedupliquer(champs)
+    assert len(fusion) == 2
+    assert not any(c.get("lateralite_divergente") for c in fusion)
+
+
 def test_p2_représentant_le_score_tranche_pas_la_longueur():
     """À fréquence égale, le représentant est le membre au MEILLEUR score —
     jamais la forme la plus longue (souvent la plus bruitée)."""
@@ -319,6 +387,44 @@ def test_p3_acte_route_vers_antecedents():
     # Un médicament reste un traitement.
     assert rubrique_de("treatment", "Metformine", None, "Metformine") == \
         "traitements_long_cours"
+
+
+def test_p3_actes_chirurgicaux_dragon():
+    """C3 (DRAGON v7) : cardiologie interventionnelle, chirurgie tendineuse
+    et contention ne sont pas des médicaments au long cours. « annulopiastie »
+    et « Piicature » sont les fautes d'OCR RÉELLES du dossier — suffixes
+    tolérants dédiés (« -iastie », « icature »)."""
+    for acte in (
+        "PLASTIE MITRALE",
+        "annulopiastie mitrale",
+        "LITHOTRIPSIE EXTRA-CORPORELLE",
+        "Piicature de l'anneau",
+        "injection antérograde de cardioplégie sanguine froide",
+        "reperfusion sanguine",
+        "Hémostase",
+        "treillis de vicryl",
+        "contention",
+        "botte cheville",
+        "ligament TENOLIG",
+        "circulation extracorporelle",
+        "sternotomie",
+    ):
+        assert est_un_acte(acte), acte
+
+
+def test_p3_supports_therapeutiques_en_vigilance():
+    """C3 (DRAGON v7) : les supports thérapeutiques — transfusion,
+    oxygénothérapie, support inotrope (et dialyse, épuration : des soins,
+    pas des actes posés) — ne sont NI médicaments au long cours NI
+    antécédents chirurgicaux : points de vigilance."""
+    from src.extraction_nlp.filtres_vsm import est_un_support_therapeutique
+
+    for support in ("transfusion", "Oxygénothérapie", "support inotrope",
+                    "dialyse", "épuration"):
+        assert est_un_support_therapeutique(support), support
+        assert not est_un_acte(support), support
+        assert rubrique_de("treatment", support, None, support) == \
+            "points_vigilance", support
 
 
 # ---------------------------------------------------------------------------
@@ -748,6 +854,58 @@ def test_journal_rejet_validateur_et_extracteur(monkeypatch):
     assert [e.valeur for e in entites_finales] == ["Œsophagite chronique"]
 
 
+def test_c4_fragments_tronques_rejetes(monkeypatch):
+    """C4 (DRAGON v7) : une valeur qui COMMENCE par une préposition ou un
+    article (« de résistance », « du murmure vésiculaire ») ou qui FINIT
+    par un mot-outil (« Résection de la ») est une découpe ratée — les
+    vraies bornes de l'entité sont ailleurs."""
+    from src.extraction_nlp import drbert_extractor as dtx
+    from src.extraction_nlp.drbert_extractor import Entite
+    from src.extraction_nlp.entity_extractor import _drbert_vers_entities
+
+    texte = (
+        "Terrain de résistance aux diurétiques.\n"
+        "Auscultation : abolition du murmure vésiculaire.\n"
+        "Résection de la valve postérieure.\n"
+        "Remaniements adénomateux de la prostate.\n"
+        "Brulures à la jambe.\n"
+        "Cardiopathie valvulaire sévère."
+    )
+
+    def _ent(label: str, mot: str, score: float) -> Entite:
+        debut = texte.index(mot)
+        return Entite(label, mot, debut, debut + len(mot), score)
+
+    entites = [
+        _ent("problem", "de résistance", 0.95),           # début tronqué
+        _ent("problem", "du murmure vésiculaire", 0.95),  # début tronqué
+        _ent("treatment", "Résection de la", 0.95),       # fin tronquée
+        _ent("problem", "Remaniements adénomateux de la", 0.95),  # idem
+        _ent("problem", "Brulures à", 0.95),              # fin tronquée
+        _ent("problem", "Cardiopathie valvulaire sévère", 0.95),  # saine
+    ]
+
+    class _FakeMoteur:
+        def annoter(self, t: str) -> list[Entite]:
+            return list(entites)
+
+    monkeypatch.setattr(dtx, "_MOTEUR", _FakeMoteur())
+    report: dict = {}
+    entites_finales = _drbert_vers_entities(texte, pages=None, report=report)
+    # Seule l'entité saine survit.
+    assert [e.valeur for e in entites_finales] == ["Cardiopathie valvulaire sévère"]
+    # Chaque rejet porte la règle nommée validateur_fragment_tronque.
+    rejets_tronques = [r for r in report["rejets"]
+                       if r["regle"] == "validateur_fragment_tronque"]
+    assert {r["valeur"] for r in rejets_tronques} == {
+        "de résistance",
+        "du murmure vésiculaire",
+        "Résection de la",
+        "Remaniements adénomateux de la",
+        "Brulures à",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Normalisateur : seuil CIM-10 relevé à 78 (audit 2026-08-24)
 # ---------------------------------------------------------------------------
@@ -844,3 +1002,86 @@ def test_pantoprazole_code_correct():
     assert normalize_medication("PANTOPRAZOLE")["code_atc"] == "A02BC02"
     assert normalize_medication("Pantoprazole 20 mg")["code_atc"] == "A02BC02"
     assert normalize_medication("Oméprazole")["code_atc"] == "A02BC01"
+
+
+# ---------------------------------------------------------------------------
+# C1/C2 — audit DRAGON v7 : seuil ATC 0,95, spécificité étendue à CIM-10
+# ---------------------------------------------------------------------------
+
+
+def test_c1_dragon_atc_faux_elimines():
+    """DRAGON v7 : « un nom de molécule est un IDENTIFIANT, pas une
+    expression ». La ressemblance graphique ne suffit pas : SPIRAMYCINE
+    ≠ B01AC06 (aspirine !), GENTALLINE ≈ sertraline → N06AB06,
+    ofloxacine ≈ fluoxétine → N06AB03. Un code faux sur un antibiotique
+    est un risque clinique direct (décision d'anticoagulation,
+    contre-indication chirurgicale) : en dessous de 0,95, AUCUN code."""
+    from src.extraction_nlp.normalizer import normalize_medication
+
+    assert normalize_medication("SPIRAMYCINE")["code_atc"] is None
+    assert normalize_medication("GENTALLINE")["code_atc"] is None
+    assert normalize_medication("Ofloxacine")["code_atc"] is None
+    assert normalize_medication("gentalline 240 mg")["code_atc"] is None
+
+
+def test_c1_posologie_accolee_conservee():
+    """Non-régression (checklist DRAGON v7) : la posologie accolée fait un
+    sur-ensemble à 1,00 — « PARACETAMOL 1g » garde N02BE01."""
+    from src.extraction_nlp.normalizer import normalize_medication
+
+    assert normalize_medication("PARACETAMOL 1g")["code_atc"] == "N02BE01"
+    assert normalize_medication("Metformine 1000 mg matin")["code_atc"] == "A10BA02"
+
+
+def test_c2_cim10_sur_specificite_refusee():
+    """« diabète » ≠ E11 « de type 2 », « cardiopathie » ≠ I25 « ischémique
+    chronique », « tumeur » ≠ C50 « du sein », « anémie » ≠ D50 « par
+    carence en fer » : le code affirme plus que le texte — AUCUN code
+    (les parents E14/C80/D64/I51.9 ne sont pas au référentiel). Le piège
+    ne produit pas toujours un score parfait (« tumeur » → C50 = 94),
+    d'où le déclenchement abaissé à 0,90."""
+    from src.extraction_nlp.normalizer import normalize_diagnosis
+
+    assert normalize_diagnosis("diabète")["code_cim10"] is None
+    assert normalize_diagnosis("cardiopathie")["code_cim10"] is None
+    assert normalize_diagnosis("tumeur")["code_cim10"] is None
+    assert normalize_diagnosis("anémie")["code_cim10"] is None
+    assert normalize_diagnosis("hypercholestérolémie")["code_cim10"] is None
+
+
+def test_c2_regroupements_et_completions_acceptes():
+    """Exceptions de coordination/imprécision (le code REGROUPE) et
+    complétions canoniques : I48 « Fibrillation ET flutter » reste le code
+    d'une fibrillation isolée (0,80 < déclenchement 0,90) ; « sucré »,
+    « aigu », « autre », « maladie », « antécédents personnels » complètent
+    le nom officiel sans affirmer plus ; les négations finales
+    (« sans précision ») n'affirment rien (M81 garde l'ostéoporose nue)."""
+    from src.extraction_nlp.normalizer import normalize_diagnosis
+
+    assert normalize_diagnosis("fibrillation auriculaire")["code_cim10"] == "I48"
+    assert normalize_diagnosis("insuffisance cardiaque droite")["code_cim10"] == "I50"
+    assert normalize_diagnosis("diabète de type 2")["code_cim10"] == "E11"
+    assert normalize_diagnosis("infarctus du myocarde")["code_cim10"] == "I21"
+    assert (
+        normalize_diagnosis("maladie pulmonaire obstructive chronique")["code_cim10"]
+        == "J44"
+    )
+    assert normalize_diagnosis("ostéoporose")["code_cim10"] == "M81"
+    assert normalize_diagnosis("Parkinson")["code_cim10"] == "G20"
+    assert normalize_diagnosis("allergie à la pénicilline")["code_cim10"] == "Z88.0"
+    assert normalize_diagnosis("allergie")["code_cim10"] == "T78.4"
+
+
+def test_c2_ponctuation_des_libelles_ne_bloque_plus_le_match():
+    """Bug latent corrigé (mesuré pendant C2) : token_set_ratio découpe sur
+    les espaces SEULS — la ponctuation restait collée aux jetons. « allergie »
+    ne matchait JAMAIS « Allergie, sans précision » (jeton « allergie, »),
+    « BPCO » jamais « (BPCO) », et « AVC ischémique » ratait I63 pour
+    retomber sur I25 « Cardiopathie ischémique chronique » à 0,83 !"""
+    from src.extraction_nlp.normalizer import normalize_diagnosis
+
+    assert normalize_diagnosis("BPCO")["code_cim10"] == "J44"
+    assert normalize_diagnosis("AVC ischémique")["code_cim10"] == "I63"
+    assert normalize_diagnosis("pacemaker")["code_cim10"] == "Z95.0"
+    assert normalize_diagnosis("hypothyroïdie")["code_cim10"] == "E03.9"
+    assert normalize_diagnosis("hyperlipidémie")["code_cim10"] == "E78.5"

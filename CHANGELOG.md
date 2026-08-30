@@ -2,6 +2,76 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.6] — 2026-08-30
+
+### Audit DRAGON v7 (C1-C5) : codes sûrs, actes reclassés, fragments rejetés
+
+Analyse du dossier DRAGON (cardiologie interventionnelle, endocardite,
+néphrologie, chirurgie tendineuse) — des défauts qu'aucun dossier précédent
+ne révélait. Vérifié sur les trois dossiers régénérés (DRAGON 131 pages,
+ABRICOT 88, BANANE 114) : 25/27 cases de la checklist du relecteur.
+
+- **C1 — seuil ATC 0,95, aucun code en dessous** (risque clinique direct) :
+  « SPIRAMYCINE » recevait B01AC06 (ASPIRINE !), « GENTALLINE » N06AB06
+  (sertraline), « ofloxacine » N06AB03 (fluoxétine) par pure ressemblance
+  graphique — lire B01AC06 sur une spiramycine, c'est conclure « patient
+  sous aspirine » (anticoagulation, contre-indication chirurgicale). Un nom
+  de molécule est un IDENTIFIANT : les appariements légitimes (exact ou
+  posologie accolée) sont des sur-ensembles à 1,00 ; tout le reste est du
+  bruit. Vérifié : SPIRAMYCINE sans code, PARACETAMOL 1g garde N02BE01,
+  Metformine/Aspirine/Omprazole/Pantoprazole/Lévothyroxine inchangés.
+- **C2 — règle de spécificité étendue à CIM-10** (déclenchement 0,90) :
+  « diabète » ne porte plus E11 « de type 2 », « cardiopathie » plus I25
+  « ischémique chronique », « tumeur » plus C50 « du sein », « anémie »
+  plus D50 « par carence en fer ». La distinction retenue n'est pas
+  ATC/CIM-10 mais la NATURE du qualificatif : coordination/imprécision →
+  le code regroupe, on accepte (I48 « Fibrillation ET flutter » reste le
+  code d'une fibrillation isolée) ; localisation/étiologie/type → le code
+  affirme plus que le texte, on refuse. Complétions canoniques bénines :
+  « sucré », « aigu », « autre », enveloppes (« maladie », « présence »,
+  « antécédents personnels ») ; négations finales retirées (« sans
+  précision » n'affirme rien — M81 garde l'ostéoporose nue). Non-régression
+  mesurée : insuffisance cardiaque droite [I50], maladie rénale chronique
+  [N18] dans DRAGON, E11/D50/C50/I25 refusés sur ABRICOT.
+- **Bug latent découvert en mesurant C2** : `token_set_ratio` découpe sur
+  les espaces SEULS — la ponctuation restait collée aux jetons. « allergie »
+  ne matchait JAMAIS « Allergie, sans précision », « BPCO » jamais
+  « (BPCO) », « pacemaker » jamais « (pacemaker) », et « AVC ischémique »
+  ratait I63 pour tomber sur I25 « Cardiopathie ischémique chronique » à
+  0,83 ! Un processeur découpe désormais la ponctuation — BPCO → J44,
+  AVC ischémique → I63, pacemaker → Z95.0, Levothyrox → H03AA01.
+- **C3 — actes et supports hors des traitements** : suffixes chirurgicaux
+  complétés (-plastie, -tripsie, -pexie, -stomie, -centèse, -desis, et
+  « -iastie »/« icature » pour les fautes d'OCR réelles « annulopiastie »,
+  « Piicature ») + vocabulaire cardio/ortho (cardioplégie, reperfusion,
+  CEC, sternotomie, treillis, prothèse, TENOLIG, botte, contention…).
+  Les supports thérapeutiques (transfusion, oxygénothérapie, support
+  inotrope, dialyse, épuration) partent en points de vigilance. Traitements
+  DRAGON : 51 → 24 entrées ; total DRAGON : ~210 → 183.
+- **C4 — fragments tronqués rejetés** (règle nommée
+  `validateur_fragment_tronque`) : préposition/article en tête (« de
+  résistance », « du murmure vésiculaire ») ou mot-outil en fin
+  (« Résection de la ») = découpe ratée. Vérifié : plus aucun élément
+  commençant par de/du/des/à sur les trois dossiers.
+- **C5 — déduplication latéralisée + signalement** : couverture floue de
+  jetons (« Achilie » couvre « Achille » à 85,7) mesurée sur DRAGON (6
+  paires utiles, 0 faux positif sur les négatifs). **Bug de pont corrigé**
+  (mesuré sur le code d'avant) : « hernie inguinale » (sans côté) reliait
+  « ... droite » et « ... gauche » en UNE entrée — le garde-fou latéralité
+  s'applique désormais au NIVEAU DU CLUSTER. Tendon d'Achille DRAGON :
+  7 → 4 entrées (familles droit/gauche en pathologies, les deux marquées
+  **« ⚠ latéralité divergente — à confirmer »** dans l'éditeur — le dossier
+  documente une atteinte bilatérale, le médecin la voit désormais).
+- **Audit du normalisateur** (24/24 corrects, 0 faux) : benchmark étendu
+  aux cas DRAGON (spiramycine/gentalline/ofloxacine sans code, salmétérol
+  refusé, diabète/cardiopathie/tumeur/anémie/hypercholestérolémie sans
+  code sur-spécifique).
+- Honnêteté sur les 2 cases restées rouges : tendon d'Achille à 4 entrées
+  (les fragments d'antécédents « rupture complète »/« rupture à droite »
+  exigent un lexique de complétion — chantier C6) et total DRAGON à 183
+  (l'excès restant est le fractionnement des pathologies, synonymes —
+  chantier C6). 266 tests verts ; ruff à la baseline.
+
 ## [1.2.5] — 2026-08-24
 
 ### « Voir le passage source » : toutes les mentions, avec défilement
