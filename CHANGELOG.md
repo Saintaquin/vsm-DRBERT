@@ -2,6 +2,30 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.8] — 2026-08-30
+
+### Navigation : retour au VSM sans piège
+
+Constat d'audit UX : « Voir le passage source » ouvrait le document mais la
+flèche Retour du navigateur ramenait à la page d'accueil du navigateur — la
+navigation était un état React pur, jamais inscrit dans l'historique. Le seul
+chemin de retour était « Tableau de bord » puis la liste des VSM « à valider ».
+
+- **Navigation par historique** (pushState/popstate natif, sans dépendance) :
+  chaque changement de vue est inscrit dans l'historique du navigateur — la
+  flèche Retour revient à la vue précédente DANS l'application (document →
+  VSM → tableau de bord), la flèche Avant revient au document avec ses
+  surlignages.
+- **Bouton de retour contextuel** : « ← Retour au VSM » quand on vient de
+  l'éditeur (document ouvert par « Voir le passage source »), « ← Retour au
+  tableau de bord » sinon — il remonte l'historique au lieu de tout rabattre
+  sur l'accueil.
+- **URL signifiante** (`#/vsm/123`, `#/document/456`) : un F5 ou un lien
+  direct conserve la vue au lieu de retomber sur le tableau de bord.
+- La déconnexion remplace l'entrée courante (aucune vue post-login ne
+  survit dans l'historique) ; le retour ne sort jamais de l'application.
+- TypeScript et build propres.
+
 ## [1.2.7] — 2026-08-30
 
 ### Statistiques : plus aucun champ qui déborde

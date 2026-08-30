@@ -12,10 +12,31 @@ import { VSMEditor } from "./pages/VSMEditor";
 type View =
   | { name: "dashboard" }
   | { name: "vsm"; vsmId: string }
-  | { name: "document"; documentId: string; highlights?: string[] }
+  | { name: "document"; documentId: string; highlights?: string[]; retour?: View }
   | { name: "audit" }
   | { name: "stats" }
   | { name: "settings" };
+
+/** Vue → hash lisible (« #/vsm/123 », « #/document/456 ») : l'URL reste
+ *  signifiante et un F5 conserve la vue. */
+function routeDe(v: View): string {
+  switch (v.name) {
+    case "vsm": return `#/vsm/${encodeURIComponent(v.vsmId)}`;
+    case "document": return `#/document/${encodeURIComponent(v.documentId)}`;
+    default: return `#/${v.name}`;
+  }
+}
+
+/** Hash → vue (réhydratation après F5 / entrée par lien direct). */
+function vueDepuisHash(): View | null {
+  const m = /^#\/([a-z]+)(?:\/([^/]+))?$/.exec(window.location.hash);
+  if (!m) return null;
+  const [, nom, arg] = m;
+  if (nom === "vsm" && arg) return { name: "vsm", vsmId: decodeURIComponent(arg) };
+  if (nom === "document" && arg) return { name: "document", documentId: decodeURIComponent(arg) };
+  if (nom === "dashboard" || nom === "audit" || nom === "stats" || nom === "settings") return { name: nom };
+  return null;
+}
 
 const NAV: { key: View["name"]; label: string; roles?: User["role"][] }[] = [
   { key: "dashboard", label: "Tableau de bord" },
@@ -41,12 +62,39 @@ function isTyping(e: KeyboardEvent): boolean {
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [view, setView] = useState<View>({ name: "dashboard" });
+  const [view, setView] = useState<View>(() => vueDepuisHash() ?? { name: "dashboard" });
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   // D1 — préférences d'accessibilité appliquées au démarrage (et à chaque
   // modification dans Paramètres) ; A/B/C selon outputs/AUDIT_ACCESSIBILITE.md
   usePrefs();
+
+  // Navigation par historique du navigateur : chaque changement de vue est
+  // poussé (pushState) — la flèche Retour du navigateur revient à la vue
+  // précédente DANS l'application (VSM ← document), au lieu de quitter la
+  // page pour la page d'accueil du navigateur (constat d'audit UX).
+  const navigate = useCallback((v: View) => {
+    setView(v);
+    window.history.pushState(v, "", routeDe(v));
+  }, []);
+
+  // Flèches Retour/Avant du navigateur : restaurer l'état poussé.
+  useEffect(() => {
+    const h = (e: PopStateEvent) => {
+      const s = e.state as View | null;
+      if (s && typeof s === "object" && "name" in s) setView(s);
+      else setView(vueDepuisHash() ?? { name: "dashboard" });
+    };
+    window.addEventListener("popstate", h);
+    return () => window.removeEventListener("popstate", h);
+  }, []);
+
+  // Retour depuis une vue : remonter d'une entrée d'historique (jamais
+  // sortir de l'application si l'entrée précédente n'existe pas).
+  const goBack = useCallback(() => {
+    if (window.history.length > 1) window.history.back();
+    else setView({ name: "dashboard" });
+  }, []);
 
   // Raccourcis globaux : Ctrl+K (recherche), ? (aide), Ctrl+, (paramètres),
   // Échap (fermer les modales). Les raccourcis « ? »/« Ctrl+, » sont ignorés
@@ -58,7 +106,7 @@ export default function App() {
         setPaletteOpen((o) => !o);
       } else if ((e.ctrlKey || e.metaKey) && e.key === ",") {
         e.preventDefault();
-        setView({ name: "settings" });
+        navigate({ name: "settings" });
       } else if (e.key === "?" && !isTyping(e)) {
         e.preventDefault();
         setHelpOpen((o) => !o);
@@ -69,15 +117,30 @@ export default function App() {
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, []);
+  }, [navigate]);
 
   const logout = useCallback(async () => {
     try { await api.logout(); } catch { /* session déjà expirée */ }
     setUser(null);
+    // La déconnexion remplace l'entrée courante : aucune vue « post-login »
+    // ne doit rester dans l'historique.
     setView({ name: "dashboard" });
+    window.history.replaceState({ name: "dashboard" }, "", "#/dashboard");
   }, []);
 
-  if (!user) return <Login onLogin={(u) => setUser(u)} />;
+  if (!user) {
+    return (
+      <Login onLogin={(u) => {
+        setUser(u);
+        // Restaure la vue demandée par l'URL (lien direct, F5) sans
+        // empiler une entrée d'historique : l'entrée courante devient
+        // la vue initiale de la session.
+        const v = vueDepuisHash() ?? { name: "dashboard" };
+        setView(v);
+        window.history.replaceState(v, "", routeDe(v));
+      }} />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-papier font-corps text-encre">
@@ -95,7 +158,7 @@ export default function App() {
           <nav aria-label="Navigation principale" className="flex gap-1">
             {NAV.filter((n) => !n.roles || n.roles.includes(user.role)).map((n) => (
               <button key={n.key}
-                onClick={() => setView({ name: n.key } as View)}
+                onClick={() => navigate({ name: n.key } as View)}
                 aria-current={view.name === n.key ? "page" : undefined}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle ${view.name === n.key ? "bg-sarcelle-pale text-sarcelle-fonce" : "text-sourdine hover:bg-papier hover:text-encre"}`}>
                 {n.label}
@@ -115,20 +178,24 @@ export default function App() {
 
       <main id="contenu" className="mx-auto max-w-5xl px-4 py-6">
         {view.name !== "dashboard" && (
-          <button onClick={() => setView({ name: "dashboard" })}
+          <button onClick={goBack}
             className="mb-4 text-sm text-sarcelle underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-sarcelle">
-            ← Retour au tableau de bord
+            ← {view.name === "document" && view.retour
+              ? view.retour.name === "vsm"
+                ? "Retour au VSM"
+                : "Retour au tableau de bord"
+              : "Retour au tableau de bord"}
           </button>
         )}
         {view.name === "dashboard" && (
           <Dashboard
-            onOpenVsm={(vsmId) => setView({ name: "vsm", vsmId })}
-            onOpenDocument={(documentId) => setView({ name: "document", documentId })}
+            onOpenVsm={(vsmId) => navigate({ name: "vsm", vsmId })}
+            onOpenDocument={(documentId) => navigate({ name: "document", documentId, retour: { name: "dashboard" } })}
           />
         )}
         {view.name === "vsm" && (
           <VSMEditor vsmId={view.vsmId} user={user}
-            onShowSource={(documentId, passages) => setView({ name: "document", documentId, highlights: passages })} />
+            onShowSource={(documentId, passages) => navigate({ name: "document", documentId, highlights: passages, retour: { name: "vsm", vsmId: view.vsmId } })} />
         )}
         {view.name === "document" && <DocumentViewer documentId={view.documentId} highlights={view.highlights} />}
         {view.name === "audit" && <AuditTrail />}
@@ -141,7 +208,7 @@ export default function App() {
       </footer>
 
       {paletteOpen && (
-        <Palette onClose={() => setPaletteOpen(false)} onGoVsm={(id) => { setView({ name: "vsm", vsmId: id }); setPaletteOpen(false); }} />
+        <Palette onClose={() => setPaletteOpen(false)} onGoVsm={(id) => { navigate({ name: "vsm", vsmId: id }); setPaletteOpen(false); }} />
       )}
       {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
     </div>
