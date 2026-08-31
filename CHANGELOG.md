@@ -2,6 +2,69 @@
 
 Format : [Keep a Changelog] · Versionnage : SemVer.
 
+## [1.2.10] — 2026-08-31
+
+### N1 — ConText : négation, expérienceur, modalité
+
+Le VSM ne conservait que le terme extrait et son passage, jamais ce qui le
+QUALIFIAIT : toute entité était traitée comme un fait affirmé, concernant le
+patient, au présent. Mesure préalable sur les quatre dossiers (doctrine du
+projet) : **118 entités sur 758 (16 %)** portent un marqueur dans leur
+contexte gauche — « mort subite » en antécédent personnel alors que le
+document dit « antécédents familiaux… chez un frère » (MANGUE p107) ;
+« signe de malignité » en pathologie active alors que le compte rendu dit
+« **Absence de** signe de malignité » (MANGUE p100, DRAGON p096/p115,
+ABRICOT p033, BANANE p039/p073). Et TOUTES les occurrences de « insuffisance
+cardiaque droite » de DRAGON sont niées (« **Pas de signe d'**insuffisance
+cardiaque droite », p011/p019) : la « non-régression I50 » de la v9 était
+elle-même une affirmation fausse — la mesure tranche, le rejet s'applique.
+
+- **Évaluation de medkit d'abord** (exigée par le relecteur) : medkit n'est
+  PAS une dépendance du projet — le DrBERT-CASM2 est chargé via transformers,
+  « medkit/DrBERT-CASM2 » est le nom du modèle HuggingFace — et l'axe
+  EXPÉRIENCEUR (celui qui répond au cas « mort subite ») y est absent.
+  Implémentation minimale des règles du correctif : module
+  `contexte_conext.py`.
+- **Quatre pièges mesurés et corrigés** au fil de l'évaluation :
+  double négation (« IL n'est pas exclu qu'il se soit agi d'un abcès »
+  AFFIRME l'abcès — « exclu/éliminé/écarté » ne sont que des nuances, jamais
+  des rejets) ; PORTÉE rompue par une virgule, « et/ou » ou « jusqu'à »
+  (« sans anomalie décelée, et qui lui prescrit du CLAMOXYL » ;
+  « essayé sans succès jusqu'à ce qu'elle prenne du Rivotril ») ; ANAPHORE
+  (« expliquer cette symptomatologie » — le démonstratif/possessif immédiat
+  signale un concept affirmé plus tôt) ; négation SUR LA TECHNIQUE (« n'a
+  pas été validée dans les cas d'obésité extrême » nie la validation, pas
+  l'obésité : seule la négation FRANCHE rejette). Cinquième piège trouvé par
+  la relecture du rendu : les APOSTROPHES TYPOGRAPHIQUES de l'OCR (' U+2019)
+  rendaient « pas d'anomalie » invisible au motif franc — classe de
+  caractères dédiée.
+- **Routage** : niée → rejet TRACÉ dans le journal (règle `N1_entite_niee`,
+  contexte reproduit) ; familial → facteurs de risque, mention « antécédent
+  familial » ; hypothétique → points de vigilance, mention « à confirmer » ;
+  nuance → mention seule, rubrique inchangée (précaution : conserver et
+  marquer plutôt que supprimer). La mention est visible dans les TROIS rendus
+  (markdown, HTML, PDF) et corrigeable dans l'éditeur.
+- **Primauté de la mention affirmée** (§3.4) : le rejet est PAR occurrence,
+  avant la déduplication — mesuré sur « toux quotidienne non productive »
+  (ABRICOT), « Rivotril » (BANANE), « endocardite mitrale » (DRAGON),
+  « pneumopathie » (affirmée en pathologies + « probable » en vigilance),
+  hernies (MANGUE) : l'affirmée survit toujours au rejet de la niée.
+- **Garde-fou −10 % : dépassé (−11,4 à −15,7 %) — enquête menée comme
+  exigé** : inspection manuelle des 201 rejets `N1_entite_niee` (47 MANGUE,
+  71 DRAGON, 30 ABRICOT, 53 BANANE), vérification des cas douteux dans le
+  texte source (fièvre/toux ABRICOT = vraies négations ; BAV, transfusions
+  et endocardite DRAGON = toutes les occurrences détectées sont niées ou
+  hypothétiques). Conclusion : la baisse EST la correction — 201 occurrences
+  niées étaient affirmées à tort, dont 104 entités n'avaient AUCUNE
+  occurrence affirmée survivante. Faux positifs résiduels identifiés :
+  Rivotril (corrigé par la portée « jusqu'à »), « cystite chronique »
+  (« aucune douleur vésicale DE cystite chronique » — négation sur le
+  complément, limite documentée).
+- **Limites** : le moteur « rules » natif (repli de repli) ne passe pas par
+  le validateur commun — le ConText s'applique aux moteurs DrBERT et LLM ;
+  la divergence niée/affirmée d'une même entité est tracée dans le journal
+  mais pas encore remontée dans le VSM comme l'est la latéralité divergente.
+
 ## [1.2.9] — 2026-08-30
 
 ### Correctifs MANGUE v9 (M1-M5) : la métrique ne séparait plus, le mot

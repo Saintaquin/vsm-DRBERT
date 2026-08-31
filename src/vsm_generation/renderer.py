@@ -63,6 +63,12 @@ def _code_txt(it: dict) -> str:
     return f" — **{code['systeme']} {code['code']}** ({code['libelle_officiel']})"
 
 
+def _mention_txt(it: dict) -> str:
+    """N1/ConText : qualification du contexte source, visible et corrigeable."""
+    m = it.get("mention_contexte")
+    return f" — *{m}*" if m else ""
+
+
 def _identite_lignes(vsm: dict, champs: tuple[str, ...], titres: dict) -> list[str]:
     """Lignes des champs d'identité présents (identité/naissance/sexe/INS…)."""
     bloc = vsm.get("patient" if champs is IDENTITE_CHAMPS else "medecin_traitant", {})
@@ -102,7 +108,9 @@ def render_markdown(vsm: dict) -> str:
                 "_Aucune information extraite — section à compléter manuellement._"
             )
         for it in items:
-            lines.append(f"- {it['valeur']}{_code_txt(it)} · {_badge(it)}")
+            lines.append(
+                f"- {it['valeur']}{_code_txt(it)}{_mention_txt(it)} · {_badge(it)}"
+            )
 
     sig = vsm.get("signature")
     lines += ["", "---", ""]
@@ -204,8 +212,13 @@ def render_html(vsm: dict) -> str:
                     else ""
                 )
                 src = it.get("source", {}).get("passage", "")
+                mention = it.get("mention_contexte")
+                mention_html = (
+                    f" <em>({e(mention)})</em>" if mention else ""
+                )
                 parts.append(
-                    f"<li{cls} title='Source : {e(src)}'>{e(it['valeur'])}{code_html} · {badge}</li>"
+                    f"<li{cls} title='Source : {e(src)}'>{e(it['valeur'])}"
+                    f"{code_html}{mention_html} · {badge}</li>"
                 )
             parts.append("</ul>")
         parts.append("</section>")
@@ -301,8 +314,13 @@ def render_pdf(vsm: dict, out_path: str | Path) -> Path:
                 else f"{it.get('confiance', 0):.0%}"
             )
             style = item_warn if it.get("a_valider") else item_ok
+            mention = it.get("mention_contexte")
+            mention_txt = f" <i>({_html.escape(mention)})</i>" if mention else ""
             flow.append(
-                Paragraph(f"• {_html.escape(it['valeur'])}{code_txt} — {badge}", style)
+                Paragraph(
+                    f"• {_html.escape(it['valeur'])}{code_txt}{mention_txt} — {badge}",
+                    style,
+                )
             )
         flow.append(Spacer(1, 3 * mm))
 

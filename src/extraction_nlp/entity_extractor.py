@@ -152,10 +152,13 @@ class ExtractedEntity:
     correction_ocr: bool = False
     # Origine de l'entité pour la traçabilité : "llm" | "regles" | "drbert".
     origine: str = "regles"
+    # N1/ConText : qualification du contexte source (familiale, hypothétique,
+    # nuancée) — vue par le médecin, corrigeable dans l'éditeur.
+    mention_contexte: str | None = None
 
     def to_champ(self) -> dict:
         d = asdict(self)
-        return {
+        out = {
             "valeur": d["valeur"],
             "confiance": round(d["confiance"], 3),
             "source": {
@@ -167,6 +170,9 @@ class ExtractedEntity:
             "correction_ocr": d["correction_ocr"],
             "origine": d["origine"],
         }
+        if d.get("mention_contexte"):
+            out["mention_contexte"] = d["mention_contexte"]
+        return out
 
 
 def _split_sections(text: str) -> list[tuple[str, int, int]]:
@@ -801,12 +807,19 @@ def _valider_raison(
     invisible qui fait disparaître une entité sans trace.
     """
 
-    def _garder(extra_reclasse: str | None = None) -> dict:
+    def _garder(
+        extra_reclasse: str | None = None, mention: str | None = None
+    ) -> dict:
         sortie = {k: v for k, v in item.items() if not k.startswith("_")}
         sortie["valeur"] = valeur
         sortie["passage"] = passage
         if extra_reclasse:
             sortie["_reclasser"] = extra_reclasse
+        if mention:
+            # N1/ConText : la qualification accompagne l'élément jusqu'à
+            # l'éditeur — le médecin voit sur quoi la décision s'appuie et
+            # peut la corriger (même principe que « code à vérifier »).
+            sortie["mention_contexte"] = mention
         return sortie
 
     valeur = (item.get("valeur") or "").strip()
@@ -924,6 +937,29 @@ def _valider_raison(
                 "orphelin de son mot porteur)"
             ),
         )
+
+    # 5quinquies. N1/MANGUE v9+ : ConText — négation, expérienceur,
+    #    modalité. « mort subite » des antécédents FAMILIAUX n'est pas un
+    #    antécédent du patient ; « Absence de signe de malignité » n'est pas
+    #    un cancer. Le qualificatif se calcule sur le TEXTE SOURCE, AVANT la
+    #    déduplication (le contexte est perdu après, et la mention AFFIRMÉE
+    #    d'une pathologie survit naturellement au rejet de sa mention niée).
+    #    Seule la négation franche rejette (précaution du correctif :
+    #    conserver et marquer plutôt que supprimer) ; l'expérienceur
+    #    reroute en facteurs de risque, la modalité en points de vigilance.
+    from .contexte_conext import arbitrer, qualifier
+
+    _verdict, _mention = arbitrer(
+        qualifier(texte_source, int(item.get("offset_debut") or 0))
+    )
+    if _verdict == "niee":
+        return None, ("N1_entite_niee", _mention)
+    if _verdict == "familial":
+        return _garder("facteurs_risque", mention=_mention), None
+    if _verdict == "hypothetique":
+        return _garder("points_vigilance", mention=_mention), None
+    if _verdict == "nuance":
+        return _garder(mention=_mention), None
 
     # 6. Règles propres aux traitements.
     if rubrique == "traitements_long_cours":
@@ -1251,6 +1287,7 @@ def extract_entities_llm(
                     moteur_nlp=NLP_ENGINE_LLM,
                     correction_ocr=(valeur_corrigee != valeur_brut),
                     origine="llm",
+                    mention_contexte=it.get("mention_contexte"),
                 )
             )
     return entities
@@ -1533,6 +1570,7 @@ def _drbert_vers_entities(
             moteur_nlp=NLP_ENGINE_DRBERT_CASM2,
             correction_ocr=False,  # la valeur EST le texte source
             origine="drbert",
+            mention_contexte=it.get("mention_contexte"),
         )
 
     sortie: list[ExtractedEntity] = []
