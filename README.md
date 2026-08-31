@@ -21,40 +21,153 @@ avec anonymisation systématique, chiffrement au repos et traçabilité complèt
 
 ## Installation (utilisateur final)
 
+> 📘 **Manuel d'installation téléchargeable (PDF)** :
+> [`docs/MANUAL_INSTALLATION.pdf`](docs/MANUAL_INSTALLATION.pdf) — même
+> contenu pas à pas, généré par `py -3.12 tools/make_manual_pdf.py` à partir
+> de [`docs/MANUAL_INSTALLATION.md`](docs/MANUAL_INSTALLATION.md).
+
 ### Prérequis système
 
-- **Windows 10/11** ou **Linux Debian/Ubuntu LTS** (macOS : non testé mais supporté)
-- Python 3.12
-- Tesseract OCR avec le pack langue français, et Poppler (pour les PDF) :
-  - Debian/Ubuntu : `sudo apt install tesseract-ocr tesseract-ocr-fra poppler-utils`
-  - Windows : installeurs Tesseract (UB Mannheim) + Poppler, ajoutés au `PATH`
+| Composant | Windows 10/11 | Debian/Ubuntu | Pourquoi |
+|---|---|---|---|
+| **Python 3.12** (64 bits) | python.org/downloads, cocher « Add to PATH » | `sudo apt install python3.12 python3.12-venv` | torch n'est disponible qu'en 3.12 dans cet environnement |
+| **Tesseract OCR + français** | Installeur UB Mannheim (`tesseract-ocr-w64-setup…exe`), cocher le pack langue **fra** | `sudo apt install tesseract-ocr tesseract-ocr-fra` | OCR des scans |
+| **Poppler** (pdf2image) | Binaires poppler (`poppler-xx.zip`) extraits dans `C:\Program Files\poppler`, `bin\` ajouté au `PATH` | `sudo apt install poppler-utils` | Conversion PDF → images |
+| **Node.js 18+** (frontend uniquement) | nodejs.org | `sudo apt install nodejs npm` | Build de l'interface web |
 
-### Installation
+Vérifier après installation des binaires, dans un nouveau terminal :
 
-```bash
-git clone <repo> vsm-ocr && cd vsm-ocr
-python3 -m venv .venv && source .venv/bin/activate   # Windows : .venv\Scripts\activate
-pip install -r requirements.txt
-python -m src.ingestion_ocr.generate_dataset          # dataset de démonstration (optionnel)
+```powershell
+py -3.12 --version
+tesseract --version          # doit afficher … with tesseract 5.x
+pdftoppm -v                  # doit afficher poppler version …
+node --version
 ```
 
-### Lancement
+### Installation pas à pas
 
-```bash
-# Clé maître du coffre-fort de pseudonymisation (HORS application — gestion par
-# l'administrateur ; sans elle, les mappings PII↔token ne sont pas conservés) :
-export VSM_VAULT_PASSPHRASE="<phrase secrète longue gérée par votre DSI>"
+**Étape 1 — Récupérer le code source.**
 
+```powershell
+git clone https://github.com/Saintaquin/vsm-DRBERT.git vsm-ocr
+cd vsm-ocr
+```
+
+**Étape 2 — Environnement virtuel Python 3.12.**
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\activate        # Windows (Bash/Linux : source .venv/bin/activate)
+py -m pip install --upgrade pip
+```
+
+**Étape 3 — Dépendances Python** (le `--extra-index-url` fournit la roue CPU
+de llama-cpp-python, aucun appel cloud).
+
+```powershell
+py -m pip install -r requirements.txt
+```
+
+**Étape 4 — PyTorch CPU + transformers** (requis pour le moteur d'extraction
+par défaut DrBERT-CASM2 ; roue CPU uniquement — pas de CUDA nécessaire).
+
+```powershell
+py -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+py -m pip install "transformers>=4.53,<5" huggingface_hub
+```
+
+> ⚠️ L'interpréteur doit être **`py -3.12`**, jamais `python` : le `python`
+> par défaut de Windows (3.14+) n'a pas torch — l'application fonctionnerait
+> quand même, mais en repli « moteur de règles » (bannière DrBERT indisponible).
+
+**Étape 5 — Télécharger le modèle DrBERT-CASM2** (≈ 440 Mo, une seule fois,
+réseau requis UNIQUEMENT à cette étape ; ensuite tout est local).
+
+```powershell
+py -3.12 packaging/fetch_models.py
+```
+
+Le script télécharge le dépôt HuggingFace `medkit/DrBERT-CASM2` (licence MIT ;
+base Dr-BERT Apache 2.0) vers `models/drbert/` et vérifie la complétude et la
+taille (`model.safetensors` ≥ 400 Mo) — un modèle tronqué est refusé.
+
+Vérification de bout en bout avec le vrai modèle :
+
+```powershell
+py -3.12 tools/e2e_drbert.py
+```
+
+**Étape 6 — Construire le frontend** (interface web servie par le backend).
+
+```powershell
+cd frontend
+npm ci
+npm run build
+cd ..
+```
+
+**Étape 7 — Configurer le terminal** : la phrase secrète du coffre-fort de
+pseudonymisation (clé maître HORS application — à gérer avec votre DSI) et la
+taille d'upload.
+
+```powershell
+$env:VSM_VAULT_PASSPHRASE = "votre-phrase-secrete-longue"
+$env:VSM_MAX_UPLOAD_MB = "500"
+```
+
+> ⚠️ La phrase du coffre doit rester **TOUJOURS identique** entre deux
+> lancements : elle chiffre les correspondances pseudonyme ↔ identité
+> (Argon2id → AES-256-GCM). Changer de phrase rend illisibles les mappings
+> déjà stockés (c'est le chiffrement, pas un bug).
+
+**Étape 8 — Lancer l'application.**
+
+```powershell
 py -3.12 -m src.ui_backend.main
-# puis ouvrir http://127.0.0.1:8741 dans un navigateur
-# ⚠ Windows : lancer avec « py -3.12 », PAS « python » — l'interpréteur
-# « python » par défaut n'a pas torch : l'application vous avertirait au
-# démarrage (DrBERT INUTILISABLE — repli moteur de règles).
 ```
 
-À la première utilisation, cliquer « Première utilisation ? Créer le premier
-compte » (mot de passe : 12 caractères minimum). Ce mot de passe sert aussi à
-dériver la clé de chiffrement de la base — **il n'est récupérable nulle part**.
+Puis ouvrir **http://127.0.0.1:8741** dans un navigateur. Le serveur est lié à
+`127.0.0.1` exclusivement (aucun accès réseau, aucun cloud). Au démarrage, le
+modèle DrBERT est préchauffé (~5 s) ; la page d'accueil affiche l'état réel du
+moteur (`/health`).
+
+**Alternative « double-clic »** : un lanceur `lancer_vsm.bat` (non versionné,
+à personnaliser avec VOTRE phrase) exécute les étapes 7-8 automatiquement.
+
+### Première utilisation
+
+1. Cliquer **« Première utilisation ? Créer le premier compte »**.
+2. Choisir un mot de passe d'**au moins 12 caractères** — il dérive la clé de
+   chiffrement de la base : **il n'est récupérable nulle part** (oubli =
+   données illisibles, pas de porte dérobée).
+3. Se connecter : la session expire après 15 minutes d'inactivité (clé de
+   chiffrement effacée de la mémoire).
+4. Tableau de bord → **Nouveau document** → téléverser un scan (PDF/PNG/JPG/
+   TIFF, 500 Mo max avec la configuration ci-dessus) → le pipeline tourne
+   (OCR → anonymisation → extraction DrBERT → normalisation CIM-10/ATC →
+   assemblage VSM) → **relire et valider** chaque champ.
+
+### Variables d'environnement
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `VSM_VAULT_PASSPHRASE` | — (obligatoire) | Clé maître du coffre de pseudonymisation (Argon2id) |
+| `VSM_MAX_UPLOAD_MB` | `50` | Taille maximale des documents téléversés (Mo) |
+| `VSM_DRBERT_PATH` | `models/drbert/` | Dossier du modèle local (installeur : `C:\Program Files\VSM-OCR\models\drbert`) |
+| `VSM_NLP_ENGINE` | `drbert` | Moteur d'extraction : `drbert` \| `llm` \| `regles` |
+| `VSM_DATA_DIR` | `~/.vsm-ocr` | Dossier de données chiffrées (base, coffre, journaux) |
+| `VSM_DRBERT_MIN_SCORE` | `0.70` | Seuil de confiance des entités DrBERT |
+| `VSM_DRBERT_KEEP_TESTS` | non défini | Garder les entités « test » (examens), sinon écartées |
+| `VSM_LOG_LEVEL` | `INFO` | Niveau de journalisation (`<VSM_DATA_DIR>/logs/app.log`) |
+
+### Dépannage
+
+| Symptôme | Cause probable | Correctif |
+|---|---|---|
+| Bannière « ⚠ DrBERT indisponible » | Modèle absent de `models/drbert/` (ou `VSM_DRBERT_PATH`), ou lancé avec `python` au lieu de `py -3.12` | `py -3.12 packaging/fetch_models.py` puis relancer avec `py -3.12 -m src.ui_backend.main` ; la cause exacte est affichée au démarrage et sur la page d'accueil |
+| « Le port 8741 est déjà utilisé » | Une instance tourne déjà | Fermer l'ancien terminal, ou `Get-NetTCPConnection -LocalPort 8741` pour identifier le processus |
+| Upload rejeté (413) | Fichier > `VSM_MAX_UPLOAD_MB` | Relever la limite dans la config du terminal avant de lancer |
+| Mappings PII illisibles | Phrase du coffre changée entre deux lancements | Remettre la phrase ORIGINALE (voir Étape 7) |
 
 ### Application desktop (Tauri, optionnel)
 
@@ -105,15 +218,18 @@ src-tauri/            wrapper desktop (bundles .msi / .AppImage / .deb)
 schema/vsm_schema.json  contrat d'interface entre les modules (v1.1.0)
 ```
 
-Le moteur NLP par défaut est l'**encodeur DrBERT-CASM2** (medkit, licence
-MIT — décision du banc d'essai `tools/eval_drbert.py`, étape 0) : il
-**étiquette** des tokens au lieu de générer du texte, donc **aucune
-hallucination possible** (toute valeur est un extrait exact du document, avec
-ses offsets — l'ancrage XAI est structurel), ~440 Mo, CPU seul, 100 % offline
-(RGPD, art. 9). Le modèle est vendorisé à la fabrication de l'installeur
-(`packaging/fetch_models.py`) et lu localement (`VSM_DRBERT_PATH`). Le moteur
-**règles reste le repli automatique** si le modèle est absent ou échoue
-(l'application fonctionne toujours, repli tracé dans `provenance.nlp`).
+Le moteur NLP par défaut est l'**encodeur DrBERT-CASM2** (modèle HuggingFace
+`medkit/DrBERT-CASM2`, licence MIT — « medkit » est l'ORGANISATEUR du dépôt
+Hugging Face, pas une bibliothèque : le modèle est chargé via `transformers`,
+`local_files_only=True`, zéro accès réseau). Décision du banc d'essai
+`tools/eval_drbert.py`, étape 0 : il **étiquette** des tokens au lieu de
+générer du texte, donc **aucune hallucination possible** (toute valeur est un
+extrait exact du document, avec ses offsets — l'ancrage XAI est structurel),
+~440 Mo, CPU seul, 100 % offline (RGPD, art. 9). Le modèle est vendorisé à la
+fabrication de l'installeur (`packaging/fetch_models.py`) et lu localement
+(`VSM_DRBERT_PATH`). Le moteur **règles reste le repli automatique** si le
+modèle est absent ou échoue (l'application fonctionne toujours, repli tracé
+dans `provenance.nlp`).
 
 ```bash
 py -3.12 packaging/fetch_models.py             # fabrication : vendorise models/drbert/
