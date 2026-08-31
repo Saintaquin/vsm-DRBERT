@@ -100,6 +100,16 @@ CITE = ParagraphStyle("CITE", parent=CORPS, fontName=NOM_POLICE, fontSize=9,
                       spaceBefore=2 * mm, spaceAfter=2 * mm)
 LI = ParagraphStyle("LI", parent=CORPS, leftIndent=5 * mm, bulletIndent=1 * mm,
                     spaceBefore=1 * mm, spaceAfter=1 * mm)
+# Cellule de tableau : un PARAGRAPHE, jamais une chaîne brute — reportlab
+# n'enveloppe pas les chaînes (débordement horizontal des lettres), alors
+# qu'un Paragraph retourne à la ligne dans la cellule.
+CELLULE = ParagraphStyle(
+    "CELLULE", parent=CORPS, fontSize=8.0, leading=10, spaceBefore=0, spaceAfter=0
+)
+CELLULE_ENTETE = ParagraphStyle(
+    "CELLULE_ENTETE", parent=CELLULE,
+    textColor=colors.HexColor("#16537e"), fontName=NOM_POLICE,
+)
 
 
 def _en_tete_pied(canvas, doc):
@@ -116,18 +126,54 @@ def _est_tableau(lignes: list[str], i: int) -> bool:
         re.fullmatch(r"\s*\|?[\s:|-]+\|?\s*", lignes[i + 1]) is not None
 
 
+def _largeurs_proportionnelles(texte_cellules: list[list[str]], largeur_totale: float) -> list[float]:
+    """Largeurs de colonnes proportionnelles au contenu le plus long de
+    chaque colonne (avec un minimum) : les colonnes « Pourquoi » / « Rôle »
+    reçoivent l'espace qu'elles méritent au lieu de partager à l'identique."""
+    n_col = len(texte_cellules[0])
+    poids = []
+    for j in range(n_col):
+        plus_long = max(
+            len(ligne[j]) if j < len(ligne) else 0 for ligne in texte_cellules
+        )
+        poids.append(max(plus_long, 12))
+    somme = sum(poids)
+    return [largeur_totale * p / somme for p in poids]
+
+
 def _bloc_tableau(lignes: list[str], i: int) -> tuple[Table, int]:
-    """Parse un tableau markdown ; retourne (Table, index de fin)."""
-    entetes = [c.strip() for c in lignes[i].strip().strip("|").split("|")]
+    """Parse un tableau markdown ; retourne (Table, index de fin).
+
+    Chaque cellule est un Paragraph (enveloppement garanti — aucun
+    débordement), les largeurs sont proportionnelles au contenu. Les pipes
+    ÉCHAPPÉS « \\| » (ex. « drbert \\| llm \\| regles ») sont protégés avant
+    le découpage, sinon la cellule éclate en colonnes fantômes à droite."""
+    _PIPE_ECHAPPE = "\u0001"
+
+    def _decouper(ligne: str) -> list[str]:
+        protege = ligne.replace("\\|", _PIPE_ECHAPPE)
+        cellules = [c.strip() for c in protege.strip().strip("|").split("|")]
+        return [c.replace(_PIPE_ECHAPPE, "|") for c in cellules]
+
+    entetes = _decouper(lignes[i])
     i += 2  # saute la ligne de séparation
-    data = [[inline_html(c.strip()) for c in entetes]]
+    texte_brut = [[e for e in entetes]]
     while i < len(lignes) and lignes[i].strip().startswith("|"):
-        cells = [c.strip() for c in lignes[i].strip().strip("|").split("|")]
-        data.append([inline_html(c) for c in cells])
+        texte_brut.append(_decouper(lignes[i]))
         i += 1
-    # largeur : proportionnelle à la page
-    table = Table(data, colWidths=[(A4[0] - 36 * mm) / len(entetes)] * len(entetes),
-                  repeatRows=1)
+    data = [
+        [Paragraph(inline_html(c), CELLULE_ENTETE) for c in entetes],
+        *[
+            [Paragraph(inline_html(c), CELLULE) for c in ligne]
+            for ligne in texte_brut[1:]
+        ],
+    ]
+    largeur_totale = A4[0] - 40 * mm  # marge de sécurité : jamais de texte collé au bord
+    table = Table(
+        data,
+        colWidths=_largeurs_proportionnelles(texte_brut, largeur_totale),
+        repeatRows=1,
+    )
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eaf1f8")),
         ("FONTNAME", (0, 0), (-1, 0), NOM_POLICE),
@@ -136,6 +182,8 @@ def _bloc_tableau(lignes: list[str], i: int) -> tuple[Table, int]:
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#16537e")),
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c6d3e0")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1),
          [colors.white, colors.HexColor("#f7fafc")]),
     ]))
